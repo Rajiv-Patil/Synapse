@@ -50,6 +50,13 @@
   }
 }
 
+@font-face {
+  font-family: 'BrandFont';
+  src: url('./assets/belash-demo.regular.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+}
+
 #root {
   width: 1126px;
   max-width: 100%;
