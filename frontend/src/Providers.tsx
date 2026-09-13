@@ -1,3 +1,4 @@
+// frontend/src/Providers.tsx
 import { useState, createContext, useContext, type ReactNode } from 'react'
 import { Client as Styletron } from 'styletron-engine-monolithic'
 import { Provider as StyletronProvider } from 'styletron-react'

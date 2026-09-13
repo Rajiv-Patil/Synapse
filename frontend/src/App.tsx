@@ -2,28 +2,31 @@ import { useState } from 'react'
 import { styled } from 'baseui'
 import { Button, SIZE, KIND } from 'baseui/button'
 import { StatefulInput } from 'baseui/input'
-import { useThemeContext } from './Providers'
-
+import Navbar from './components/Navbar'
+import './index.css';
 //background wrapper with theme
 const FullScreenLayout = styled('div', ({ $theme }) => ({
-    height: '100vh',
-    width: '100vw',
+    height: '100%',
+    width: '100%',
     display: 'flex',
-    justifyContent: 'center',
+    flexDirection: 'column',
     alignItems: 'center',
     backgroundColor: $theme.colors.backgroundPrimary,
-    margin: 0,
     boxSizing: 'border-box',
+    transition: `background-color ${$theme.animation.timing300} ${$theme.animation.easeOutCurve}`
 }))
 
 //Center content
 const Container = styled('div', {
     padding: '40px',
     width: '100%',
-    maxWidth: '400px',
+    maxWidth: '40%',
     display: 'flex',
     flexDirection: 'column',
     gap: '20px',
+    border: "true",
+    borderColor: "red",
+    borderWidth: '1px',
     fontFamily: 'sans-serif',
 })
 
@@ -36,22 +39,13 @@ const Title = styled('h1', ({ $theme }) => ({
 
 export default function App() {
     const [clickCount, setClickCount] = useState<number>(0)
-    const { currentTheme, toggleTheme } = useThemeContext()
 
     return (
         <FullScreenLayout>
+            <Navbar />
             <Container>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <Title>Base Web Test</Title>
-
-                    {/* Global toggle functions */}
-                    <Button
-                        size={SIZE.compact}
-                        kind={KIND.secondary}
-                        onClick={toggleTheme}
-                    >
-                        Switch to {currentTheme === 'light' ? 'Dark' : 'Light'}
-                    </Button>
                 </div>
 
                 <StatefulInput
