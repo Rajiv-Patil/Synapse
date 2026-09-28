@@ -20,7 +20,6 @@ const BrandText = styled('span', ({ $theme }) => ({
     fontFamily: 'BrandFont, sans-serif',
     fontWeight: 700,
     cursor: 'pointer',
-
 }));
 
 //hover event styling for navigation buttons
@@ -29,7 +28,8 @@ const NavLink = withStyle(StyledLink, ({ $theme }) => ({
     position: 'relative',
     textDecoration: 'none',
     color: $theme.colors.contentSecondary,
-    transition: `color ${$theme.animation.timing500} ${$theme.animation.easeInOutQuinticCurve}`,
+    cursor: 'pointer',
+    transition: `color ${$theme.animation.timing300} ${$theme.animation.easeOutCurve}`,
 
     ':after': {
         content: '""',
@@ -37,44 +37,43 @@ const NavLink = withStyle(StyledLink, ({ $theme }) => ({
         bottom: '0px',
         left: '5%',
         width: '90%',
-        height: '2.5px',
-        borderRadius: '1.25px',
+        height: '2px',
+        borderRadius: '1px',
         backgroundColor: $theme.colors.contentPrimary,
-
-
         transformOrigin: 'center',
         transform: 'scaleX(0) translateZ(0)',
         backfaceVisibility: 'hidden',
-        transition: `transform ${$theme.animation.timing500} ${$theme.animation.easeInOutQuinticCurve}`,
+        transition: `transform ${$theme.animation.timing300} ${$theme.animation.easeOutCurve}`,
     },
 
     ':hover': {
         color: $theme.colors.contentPrimary,
         ':after': {
             transform: 'scaleX(1) translateZ(0)',
-            fontWeight: 7000
         },
     },
 }));
 
-function Navbar() {
+interface NavbarProps {
+    onNavigateHome?: () => void;
+}
+
+function Navbar({ onNavigateHome }: NavbarProps) {
     return (
         <TypedHeaderNavigation
             overrides={{
                 Root: {
                     style: ({$theme}) => ({
                         borderRadius: '100px',
-                        border: $theme.borders.border300,
-                        borderColor: $theme.colors.borderTransparent,
+                        border: `1px solid ${$theme.colors.borderOpaque}`,
                         width: '100%',
                         boxSizing: 'border-box',
                         backgroundColor: $theme.colors.backgroundPrimary,
-                        backdropFilter: 'blur',
                         display: "flex",
                         flexDirection: 'row',
-
-                        padding: $theme.sizing.scale0,
-                        justifyContent: "center",
+                        padding: `${$theme.sizing.scale200} ${$theme.sizing.scale600}`,
+                        justifyContent: "space-between",
+                        alignItems: "center",
                     }),
                 }
             }}
@@ -82,24 +81,22 @@ function Navbar() {
             {/* brand logo */}
             <StyledNavigationList $align={ALIGN.left}>
                 <StyledNavigationItem>
-                    <BrandText>Synapse</BrandText>
+                    <BrandText onClick={onNavigateHome}>Synapse</BrandText>
                 </StyledNavigationItem>
             </StyledNavigationList>
 
-            {/* navigation buttons */}
+            {/* navigation buttons - Chat UI removed as requested */}
             <StyledNavigationList $align={ALIGN.center}>
-                <StyledNavigationItem></StyledNavigationItem>
                 <StyledNavigationItem>
-                    <NavLink href={'#about'}> About </NavLink>
+                    <NavLink href={'#about'}>About</NavLink>
                 </StyledNavigationItem>
                 <StyledNavigationItem>
-                    <NavLink href={"#features"}> Features </NavLink>
+                    <NavLink href={"#features"}>Features</NavLink>
                 </StyledNavigationItem>
                 <StyledNavigationItem>
-                    <NavLink href={"#pricing"}> Pricing </NavLink>
+                    <NavLink href={"#pricing"}>Pricing</NavLink>
                 </StyledNavigationItem>
             </StyledNavigationList>
-
 
             {/* action buttons */}
             <StyledNavigationList $align={ALIGN.right}>
@@ -107,15 +104,14 @@ function Navbar() {
                     style={{
                         display: 'flex',
                         alignItems: 'center',
+                        gap: '8px',
                     }}>
                     <ThemeToggle/>
                     <GetStartedButton />
                 </StyledNavigationItem>
-
-
             </StyledNavigationList>
         </TypedHeaderNavigation>
     );
 }
 
-export default Navbar
+export default Navbar;
