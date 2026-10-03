@@ -149,6 +149,20 @@ export function ChatPage({ onNavigateHome }: Props) {
         };
 
         setMessages(prev => [...prev, announcement]);
+
+        // Also update conversation list with the announcement
+        if (activeConvId) {
+            setConversations(prev => prev.map(c => {
+                if (c.id === activeConvId) {
+                    return {
+                        ...c,
+                        messages: [...(c.messages || []), announcement],
+                        updatedAt: new Date().toISOString()
+                    };
+                }
+                return c;
+            }));
+        }
     };
 
     const handleSendMessage = async (textToSend?: string) => {
@@ -175,11 +189,22 @@ export function ChatPage({ onNavigateHome }: Props) {
             const result = await api.sendMessage(query, convId, attachedCsv?.documentId);
             setMessages(prev => [...prev, result.message]);
 
-            // Update conversation list title on first interaction
-            if (messages.length <= 1) {
-                const titleSnippet = query.length > 28 ? query.substring(0, 28) + '...' : query;
-                setConversations(prev => prev.map(c => c.id === convId ? { ...c, title: titleSnippet } : c));
-            }
+            // Update conversation list with BOTH user and assistant messages
+            setConversations(prev => prev.map(c => {
+                if (c.id === convId) {
+                    const updatedMessages = [...(c.messages || []), userMsg, result.message];
+                    const titleSnippet = messages.length <= 1
+                        ? (query.length > 28 ? query.substring(0, 28) + '...' : query)
+                        : c.title;
+                    return {
+                        ...c,
+                        title: titleSnippet,
+                        messages: updatedMessages,
+                        updatedAt: new Date().toISOString()
+                    };
+                }
+                return c;
+            }));
         } catch (err) {
             const errorMsg: Message = {
                 id: crypto.randomUUID(),

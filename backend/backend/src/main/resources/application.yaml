@@ -24,3 +24,7 @@ spring:
       resourceserver:
         jwt:
           issuer-uri: "https://cognito-idp.${region}.amazonaws.com/${userPoolId}"
+
+app:
+  cognito:
+    domain: "${cognitoDomain}"
