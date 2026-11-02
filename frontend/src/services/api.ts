@@ -17,9 +17,12 @@ export const api = {
         }
     },
 
-    async uploadCsv(file: File): Promise<CsvUploadResponse> {
+    async uploadCsv(file: File, conversationId?: string): Promise<CsvUploadResponse> {
         const formData = new FormData();
         formData.append('file', file);
+        if (conversationId) {
+            formData.append('conversationId', conversationId);
+        }
 
         const res = await fetch('/api/csv/upload', {
             method: 'POST',
@@ -71,18 +74,18 @@ export const api = {
     },
 
     streamChat(
-        params: { prompt: string; history?: Message[]; documentId?: string; sessionId?: string },
+        params: { prompt: string; history?: Message[]; documentId?: string; sessionId?: string; conversationId?: string },
         onToken: (token: string) => void,
-        onDone: () => void,
+        onDone: (conversationId: string, message: Message) => void,
         onError: (err: Error) => void
     ): () => void {
         let isCancelled = false;
         (async () => {
             try {
-                const resp = await this.sendMessage(params.prompt, undefined, params.documentId);
+                const resp = await this.sendMessage(params.prompt, params.conversationId, params.documentId);
                 if (!isCancelled) {
                     onToken(resp.message.content);
-                    onDone();
+                    onDone(resp.conversationId, resp.message);
                 }
             } catch (e) {
                 if (!isCancelled) {
@@ -97,13 +100,9 @@ export const api = {
     },
 
     async getConversations(): Promise<Conversation[]> {
-        try {
-            const res = await fetch('/api/conversations', { credentials: 'include' });
-            if (!res.ok) return [];
-            return await res.json();
-        } catch {
-            return [];
-        }
+        const res = await fetch('/api/conversations', { credentials: 'include' });
+        if (!res.ok) throw new Error(`Failed to load conversations (${res.status})`);
+        return await res.json();
     },
 
     async createConversation(title?: string, documentId?: string, documentName?: string): Promise<Conversation> {
@@ -124,19 +123,39 @@ export const api = {
         return await res.json();
     },
 
+    async getCsvDocument(id: string): Promise<CsvUploadResponse> {
+        const res = await fetch(`/api/csv/${id}`, { credentials: 'include' });
+        if (!res.ok) throw new Error(`Failed to load dataset (${res.status})`);
+        return await res.json();
+    },
+
     async deleteConversation(id: string): Promise<boolean> {
         const res = await fetch(`/api/conversations/${id}`, {
             method: 'DELETE',
             credentials: 'include',
         });
-        return res.ok;
+        if (!res.ok) throw new Error(`Failed to delete conversation (${res.status})`);
+        const result = await res.json();
+        return result.deleted === true;
+    },
+
+    async addConversationMessage(id: string, content: string): Promise<Message> {
+        const res = await fetch(`/api/conversations/${id}/messages`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content }),
+            credentials: 'include',
+        });
+        if (!res.ok) throw new Error(`Failed to save conversation message (${res.status})`);
+        const result = await res.json();
+        return result.message;
     },
 
     async sendMessage(
         prompt: string,
         conversationId?: string,
         documentId?: string
-    ): Promise<{ message: Message; conversation: Conversation }> {
+    ): Promise<{ conversationId: string; message: Message; conversation: Conversation }> {
         const res = await fetch('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -144,7 +163,7 @@ export const api = {
             credentials: 'include',
         });
 
-        if (!res.ok) throw new Error('Failed to send message');
+        if (!res.ok) throw new Error(`Failed to send message (${res.status})`);
         return await res.json();
     },
 

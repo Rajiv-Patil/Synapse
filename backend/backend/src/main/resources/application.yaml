@@ -2,6 +2,10 @@ server:
   port: 8080
 
 spring:
+  config:
+    import:
+      - optional:file:.env[.properties]
+      - optional:file:backend/backend/.env[.properties]
   application:
     name: synapse-oauth
   security:
@@ -25,6 +29,35 @@ spring:
         jwt:
           issuer-uri: "https://cognito-idp.${region}.amazonaws.com/${userPoolId}"
 
+  datasource:
+    url: jdbc:postgresql://localhost:5432/synapse
+    username: synapse_app
+    password: "${DB_PASSWORD:}"
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+  sql:
+    init:
+      mode: never
+      schema-locations: classpath:schema.sql
+
 app:
   cognito:
     domain: "${cognitoDomain}"
+  frontend:
+    redirect-url: http://localhost:5174/chat
+
+langchain4j:
+  enabled: true
+  groq:
+    api-key: "${GROQ_API_KEY:}"
+  hugging-face:
+    chat-model:
+      model-id: mistralai/Mistral-7B-Instruct-v0.3
+      temperature: 0.7
+      timeout: PT60S
+      access-token: "${HUGGING_FACE_API_KEY:}"

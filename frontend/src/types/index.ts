@@ -3,6 +3,14 @@ export interface Message {
     role: 'user' | 'assistant' | 'system';
     content: string;
     timestamp: string;
+    sqlResult?: SqlResult | null;
+}
+
+export interface SqlResult {
+    query: string;
+    columns: string[];
+    rows: Record<string, unknown>[];
+    count: number;
 }
 
 export interface CsvIssue {
@@ -57,6 +65,7 @@ export interface Conversation {
 
 export interface UserProfile {
     authenticated: boolean;
+    userId?: string;
     name?: string;
     email?: string;
     roles?: string[];

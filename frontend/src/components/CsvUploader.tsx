@@ -6,11 +6,12 @@ import { api } from '../services/api';
 import type { CsvUploadResponse } from '../types';
 
 interface Props {
-    onUploaded: (data: CsvUploadResponse) => void;
+    onUploaded: (data: CsvUploadResponse, conversationId?: string) => void;
     compact?: boolean;
+    conversationId?: string;
 }
 
-export function CsvUploader({ onUploaded, compact = false }: Props) {
+export function CsvUploader({ onUploaded, compact = false, conversationId }: Props) {
     const [css, theme] = useStyletron();
     const [isDragging, setIsDragging] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
@@ -26,9 +27,10 @@ export function CsvUploader({ onUploaded, compact = false }: Props) {
         }
 
         setIsUploading(true);
+        const targetConversationId = conversationId;
         try {
-            const data = await api.uploadCsv(file);
-            onUploaded(data);
+            const data = await api.uploadCsv(file, targetConversationId);
+            onUploaded(data, targetConversationId);
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Upload failed');
         } finally {

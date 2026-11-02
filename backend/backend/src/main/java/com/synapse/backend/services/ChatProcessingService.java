@@ -1,21 +1,33 @@
+// FILE: main/java/com/synapse/backend/services/ChatProcessingService.java
 package com.synapse.backend.services;
 
 import com.synapse.backend.models.*;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Service
 public class ChatProcessingService {
 
     private final CsvStorageService csvStorageService;
+    private final SqlAgentService sqlAgentService;
+    private final DatasetMetadataService metadataService;
+    private final JdbcTemplate jdbcTemplate;
 
-    public ChatProcessingService(CsvStorageService csvStorageService) {
+    public ChatProcessingService(CsvStorageService csvStorageService,
+                                 DatasetMetadataService metadataService, JdbcTemplate jdbcTemplate,
+                                 Optional<SqlAgentService> sqlAgentService) {
         this.csvStorageService = csvStorageService;
+        this.metadataService = metadataService;
+        this.jdbcTemplate = jdbcTemplate;
+        this.sqlAgentService = sqlAgentService.orElse(null);
     }
 
-    public String processQuery(String prompt, String documentId) {
+    public String processQuery(String prompt, String conversationId, String documentId) {
         if (prompt == null || prompt.isBlank()) {
             return "Please provide a question or instruction.";
         }
@@ -29,44 +41,135 @@ public class ChatProcessingService {
             return "No CSV file is currently attached to this conversation. Please upload a CSV file to run schema, quality, and data analysis.";
         }
 
-        Optional<CsvDocument> docOpt = csvStorageService.getById(documentId);
+        // Try to get document from database
+        Optional<CsvDocument> docOpt = csvStorageService.getByIdForConversation(documentId, conversationId);
         if (docOpt.isEmpty()) {
-            return "Document ID " + documentId + " was not found in the active session. Please re-upload the CSV file.";
+            return "Document ID " + documentId + " was not found. Please re-upload the CSV file.";
         }
 
         CsvDocument doc = docOpt.get();
 
-        // 1. Health check / Auto-heal report query
-        if (lower.contains("health") || lower.contains("heal") || lower.contains("corrupt") || lower.contains("issue") || lower.contains("quality")) {
+        // 1. ONLY intercept dedicated, explicit file health inspection queries
+        if (isExplicitHealthCheckQuery(lower)) {
             return generateHealthResponse(doc);
         }
 
-        // 2. Schema / Columns query
-        if (lower.contains("schema") || lower.contains("column") || lower.contains("data type") || lower.contains("structure")) {
+        // 2. ROUTE ALL ANALYTICAL INQUIRIES (e.g. "top 3", filters, stats, schema) TO SQL AGENT
+        if (sqlAgentService != null) {
+            try {
+                String datasetContext = loadDatasetContext(conversationId, documentId);
+                return sqlAgentService.processQuery(prompt, conversationId, documentId, datasetContext);
+            } catch (Exception e) {
+                return formatAiError(e);
+            }
+        }
+
+        // 3. OFFLINE FALLBACK ONLY (when no LLM / SQL Agent is active)
+        if (lower.contains("schema") || lower.contains("columns") || lower.contains("data type") || lower.contains("structure")) {
             return generateSchemaResponse(doc);
         }
-
-        // 3. Null / Missing values query
-        if (lower.contains("null") || lower.contains("missing") || lower.contains("empty") || lower.contains("blank")) {
+        if (lower.equals("null") || lower.contains("missing values") || lower.contains("null values")) {
             return generateNullsResponse(doc);
         }
-
-        // 4. Sample / preview rows query
-        if (lower.contains("top") || lower.contains("sample") || lower.contains("preview") || lower.contains("row") || lower.contains("first") || lower.contains("show")) {
-            return generateRowsResponse(doc, 5);
+        if (lower.contains("sample") || lower.contains("preview") || lower.contains("top") || lower.contains("first")) {
+            int limit = extractLimit(lower, 5);
+            return generateRowsResponse(doc, limit);
         }
-
-        // 5. Statistics / Summary query
         if (lower.contains("stat") || lower.contains("summary") || lower.contains("describe") || lower.contains("overview")) {
             return generateStatsResponse(doc);
         }
 
-        // 6. Generic response based on data
-        return generateGeneralAnalysis(doc, prompt);
+        return "I can help with health checks, schema analysis, null values, and previews. For advanced SQL queries, enable LLM integration.";
+    }
+
+    public ChatResponse processStructuredQuery(String prompt, String conversationId, String documentId) {
+        if (prompt != null && documentId != null && !documentId.isBlank() && sqlAgentService != null) {
+            Optional<CsvDocument> doc = csvStorageService.getByIdForConversation(documentId, conversationId);
+            if (doc.isPresent() && !isExplicitHealthCheckQuery(prompt.toLowerCase().trim())) {
+                try {
+                    return sqlAgentService.processStructuredQuery(prompt, conversationId, documentId,
+                            loadDatasetContext(conversationId, documentId));
+                } catch (Exception ignored) { }
+            }
+        }
+        return new ChatResponse(processQuery(prompt, conversationId, documentId), null);
+    }
+
+    private boolean isExplicitHealthCheckQuery(String lower) {
+        return lower.equals("health")
+                || lower.equals("show health")
+                || lower.contains("health report")
+                || lower.contains("auto-heal")
+                || lower.contains("auto heal")
+                || lower.contains("csv health")
+                || lower.contains("healing details")
+                || lower.contains("corruptions");
+    }
+
+    private int extractLimit(String lower, int defaultLimit) {
+        Matcher matcher = Pattern.compile("\\b(?:top|first|limit)\\s+(\\d+)\\b").matcher(lower);
+        if (matcher.find()) {
+            try {
+                return Integer.parseInt(matcher.group(1));
+            } catch (NumberFormatException ignored) {}
+        }
+        return defaultLimit;
+    }
+
+    private String formatAiError(Exception e) {
+        String errorType = e.getClass().getSimpleName();
+        String message = e.getMessage();
+
+        return "Error executing query: " + errorType + " - " + message;
+    }
+
+    private String loadDatasetContext(String conversationId, String documentId) {
+        try {
+            String metadataJson = jdbcTemplate.queryForObject(
+                    "SELECT metadata FROM csv_documents WHERE id = ? AND conversation_id = ?",
+                    String.class,
+                    UUID.fromString(documentId), UUID.fromString(conversationId)
+            );
+
+            if (metadataJson != null && !metadataJson.isBlank()) {
+                var metadata = metadataService.metadataFromJson(metadataJson);
+                return metadataService.formatMetadataForSystemPrompt(metadata);
+            }
+        } catch (Exception e) {
+            // Metadata might not exist yet, fall back to in-memory data
+        }
+
+        CsvDocument doc = csvStorageService.getByIdForConversation(documentId, conversationId).orElse(null);
+        if (doc != null) {
+            return buildSimpleContext(doc);
+        }
+
+        return "";
+    }
+
+    private String buildSimpleContext(CsvDocument doc) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("\n=== DATASET CONTEXT ===\n");
+        sb.append("File: ").append(doc.getFilename()).append("\n");
+
+        if (doc.getHealthReport() != null) {
+            sb.append("Rows: ").append(doc.getHealthReport().getHealedRowCount() - 1).append("\n");
+            sb.append("Columns: ").append(doc.getHeaders().size()).append("\n\n");
+            sb.append("Columns:\n");
+            for (ColumnMetadata col : doc.getHealthReport().getColumns()) {
+                sb.append("  - ").append(col.getName()).append(" (").append(col.getInferredType()).append(")\n");
+            }
+        }
+        sb.append("=====================\n");
+        return sb.toString();
     }
 
     private String generateHealthResponse(CsvDocument doc) {
         CsvHealthCheckReport r = doc.getHealthReport();
+        if (r == null) {
+            return "Health report data is currently unavailable for this session.";
+        }
+
         StringBuilder sb = new StringBuilder();
 
         if (r.getIssues().isEmpty()) {
@@ -97,6 +200,8 @@ public class ChatProcessingService {
     }
 
     private String generateSchemaResponse(CsvDocument doc) {
+        if (doc.getHealthReport() == null) return "Schema metadata unavailable.";
+
         StringBuilder sb = new StringBuilder();
         sb.append("| Column Name | Inferred Type | Null Count | Null % | Sample Values |\n");
         sb.append("|---|---|---|---|---|\n");
@@ -117,6 +222,8 @@ public class ChatProcessingService {
     }
 
     private String generateNullsResponse(CsvDocument doc) {
+        if (doc.getHealthReport() == null) return "Missing data for null analysis.";
+
         StringBuilder sb = new StringBuilder();
         sb.append("Null & Missing Value Analysis: ").append(doc.getFilename()).append("\n\n");
 
@@ -128,7 +235,7 @@ public class ChatProcessingService {
         if (colsWithNulls.isEmpty()) {
             sb.append("No null or missing values detected. Every column is complete across all ").append(totalRows).append(" rows.\n");
         } else {
-            sb.append("Missing values detected across ").append(colsWithNulls.size()).append("column(s):\n\n");
+            sb.append("Missing values detected across ").append(colsWithNulls.size()).append(" column(s):\n\n");
             sb.append("| Column | Type | Missing Values | Completeness |\n");
             sb.append("|---|---|---|---|\n");
             for (ColumnMetadata c : colsWithNulls) {
@@ -142,13 +249,19 @@ public class ChatProcessingService {
     }
 
     private String generateRowsResponse(CsvDocument doc, int limit) {
+        if (doc.getPreviewRows() == null || doc.getHeaders() == null) return "Preview data is missing.";
+
         StringBuilder sb = new StringBuilder();
         sb.append("Previewing First ").append(Math.min(limit, doc.getPreviewRows().size()))
                 .append(" Rows: ").append(doc.getFilename()).append("\n\n");
 
         List<String> headers = doc.getHeaders();
         sb.append("| ").append(String.join(" | ", headers)).append(" |\n");
-        sb.append("|").append("---|".repeat(headers.size())).append("\n");
+        sb.append("|");
+        for (int i = 0; i < headers.size(); i++) {
+            sb.append("---|");
+        }
+        sb.append("\n");
 
         int count = 0;
         for (Map<String, Object> row : doc.getPreviewRows()) {
@@ -166,6 +279,8 @@ public class ChatProcessingService {
     }
 
     private String generateStatsResponse(CsvDocument doc) {
+        if (doc.getHealthReport() == null) return "Statistics data is missing.";
+
         StringBuilder sb = new StringBuilder();
         sb.append("Summary Statistics: ").append(doc.getFilename()).append("\n\n");
         sb.append("Total Rows: ").append(doc.getHealthReport().getHealedRowCount() - 1).append("\n");
@@ -183,21 +298,6 @@ public class ChatProcessingService {
         sb.append("Text / Categorical: ").append(strCols).append("\n");
         sb.append("Date / Temporal: ").append(dateCols).append("\n\n");
 
-        sb.append("Suggested inquiries: \"Show schema\" to view column types, or \"Show health\" to view auto-healed corruptions.");
         return sb.toString();
-    }
-
-    private String generateGeneralAnalysis(CsvDocument doc, String prompt) {
-        return "Analysis for " + doc.getFilename() + "(" +
-                (doc.getHealthReport().getHealedRowCount() - 1) + " rows, " +
-                doc.getHeaders().size() + " columns).\n\n" +
-                "Dataset Status: " + doc.getHealthReport().getStatus() + " (" +
-                (doc.getHealthReport().isAutoHealed() ? "Auto-healed" : "Clean") + ")\n" +
-                "Available Columns: " + String.join(", ", doc.getHeaders()) + "\n\n" +
-                "Available inquiries:\n" +
-                "1. \"Describe the schema\"\n" +
-                "2. \"Show CSV health report\"\n" +
-                "3. \"Which columns have null values?\"\n" +
-                "4. \"Show top 5 rows\"";
     }
 }

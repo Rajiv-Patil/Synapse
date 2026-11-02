@@ -15,6 +15,7 @@ public class ChatMessage {
     private String id;
     private String role; // "user", "assistant", "system"
     private String content;
+    private SqlResult sqlResult;
     @Builder.Default
     private Instant timestamp = Instant.now();
 }

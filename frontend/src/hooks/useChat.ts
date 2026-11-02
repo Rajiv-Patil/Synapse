@@ -9,6 +9,7 @@ export function useChat(documentId?: string) {
 
     // Stable session ID for the lifetime of this hook instance
     const sessionId   = useRef(crypto.randomUUID()).current;
+    const conversationIdRef = useRef<string | undefined>(undefined);
     // Ref to the current abort function (to cancel streaming on unmount)
     const cancelRef   = useRef<(() => void) | null>(null);
 
@@ -29,7 +30,7 @@ export function useChat(documentId?: string) {
         setError(null);
 
         cancelRef.current = api.streamChat(
-            { prompt, history: messages, documentId, sessionId },
+            { prompt, history: messages, documentId, sessionId, conversationId: conversationIdRef.current },
             // onToken — append each streamed token to the assistant message
             (token: string) => {
                 setMessages(prev => prev.map(m =>
@@ -37,7 +38,13 @@ export function useChat(documentId?: string) {
                 ));
             },
             // onDone
-            () => setLoading(false),
+            (conversationId: string, completedMessage: Message) => {
+                conversationIdRef.current = conversationId;
+                setMessages(prev => prev.map(m => m.id === assistantMsg.id
+                    ? { ...m, sqlResult: completedMessage.sqlResult ?? null }
+                    : m));
+                setLoading(false);
+            },
             // onError
             (err: Error) => {
                 setError(err.message);
@@ -49,6 +56,7 @@ export function useChat(documentId?: string) {
 
     const clear = useCallback(() => {
         cancelRef.current?.();
+        conversationIdRef.current = undefined;
         setMessages([]);
         setError(null);
         setLoading(false);

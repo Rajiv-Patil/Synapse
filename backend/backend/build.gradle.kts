@@ -9,7 +9,7 @@ version = "0.0.1-SNAPSHOT"
 
 java {
 	toolchain {
-		languageVersion = JavaLanguageVersion.of(25)
+		languageVersion = JavaLanguageVersion.of(21)
 	}
 }
 
@@ -22,17 +22,24 @@ dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-security")
 	implementation("org.springframework.boot:spring-boot-starter-validation")
 	implementation("org.springframework.boot:spring-boot-starter-webmvc")
+	implementation("org.springframework.boot:spring-boot-starter-data-jdbc")
 
 	implementation("org.apache.commons:commons-csv:1.12.0")
+
+	// PostgreSQL
+	implementation("org.postgresql:postgresql:42.7.4")
 
 	// OAuth2 Implementation Dependencies
 	implementation("org.springframework.boot:spring-boot-starter-oauth2-client")
 	implementation("org.springframework.boot:spring-boot-starter-oauth2-resource-server")
 
-	// LangChain4j (temporarily commented out)
-	// implementation("dev.langchain4j:langchain4j-spring-boot-starter:1.20.0-beta30")
-	// implementation("dev.langchain4j:langchain4j-open-ai-spring-boot-starter:1.20.0-beta30")
-	// implementation("dev.langchain4j:langchain4j-bedrock:1.20.0")
+	// Jackson for JSON processing
+	implementation("com.fasterxml.jackson.core:jackson-databind")
+
+	// LangChain4j
+	implementation("dev.langchain4j:langchain4j-spring-boot-starter:0.36.2")
+	implementation("dev.langchain4j:langchain4j-open-ai:0.36.2")
+	implementation("org.springframework.boot:spring-boot-starter-actuator")
 
 	// Lombok Compile Configuration
 	compileOnly("org.projectlombok:lombok")
@@ -50,6 +57,10 @@ dependencies {
 
 tasks.withType<Test> {
 	useJUnitPlatform()
+	environment(System.getenv())
+}
+
+tasks.bootRun {
 	environment(System.getenv())
 }
 

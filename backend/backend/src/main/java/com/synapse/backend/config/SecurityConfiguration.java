@@ -11,6 +11,7 @@ import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.authority.mapping.GrantedAuthoritiesMapper;
 import org.springframework.security.oauth2.core.oidc.user.OidcUserAuthority;
+import org.springframework.security.oauth2.core.user.OAuth2UserAuthority;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
@@ -29,6 +30,7 @@ public class SecurityConfiguration {
 
     private final LoginSuccessHandler loginSuccessHandler;
 
+    // Inject the LoginSuccessHandler
     public SecurityConfiguration(LoginSuccessHandler loginSuccessHandler) {
         this.loginSuccessHandler = loginSuccessHandler;
     }
@@ -44,16 +46,17 @@ public class SecurityConfiguration {
                                 "/index.html",
                                 "/static/**",
                                 "/api/public",
-                                "/api/auth/me",
-                                "/api/csv/**",
-                                "/api/conversations/**",
-                                "/api/chat/**",
-                                "/api/upload/**"
+                                "/api/auth/me"
                         ).permitAll()
+                        .requestMatchers("/api/csv/**").authenticated()
+                        .requestMatchers("/api/conversations/**").authenticated()
+                        .requestMatchers("/api/chat/**").authenticated()
+                        .requestMatchers("/api/upload/**").authenticated()
                         .requestMatchers("/admin/**").hasRole("ADMIN")
                         .requestMatchers("/user/**").hasAnyRole("USER", "ADMIN")
                         .anyRequest().authenticated()
                 )
+                // Attach the success handler to the OAuth2 Login flow
                 .oauth2Login(oauth2 -> oauth2
                         .successHandler(loginSuccessHandler)
                 );
@@ -64,7 +67,8 @@ public class SecurityConfiguration {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOriginPatterns(List.of("http://localhost:5173", "http://127.0.0.1:5173"));
+        // Retained 5174 ports from your original implementation alongside 5173
+        config.setAllowedOriginPatterns(List.of("http://localhost:5173", "http://localhost:5174", "http://127.0.0.1:5173", "http://127.0.0.1:5174"));
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"));
         config.setAllowedHeaders(List.of("*"));
         config.setExposedHeaders(List.of("Content-Disposition"));
@@ -79,16 +83,18 @@ public class SecurityConfiguration {
     public GrantedAuthoritiesMapper userAuthoritiesMapper() {
         return (authorities) -> {
             Set<GrantedAuthority> mappedAuthorities = new HashSet<>();
-            try {
-                OidcUserAuthority oidcUserAuthority = (OidcUserAuthority) new ArrayList<>(authorities).getFirst();
-                Object groups = oidcUserAuthority.getAttributes().get("cognito:groups");
+            for (GrantedAuthority authority : authorities) {
+                var attributes = authority instanceof OidcUserAuthority oidc
+                        ? oidc.getAttributes()
+                        : authority instanceof OAuth2UserAuthority oauth2 ? oauth2.getAttributes() : null;
+                Object groups = attributes != null ? attributes.get("cognito:groups") : null;
                 if (groups instanceof List<?> groupList) {
-                    mappedAuthorities = groupList.stream()
+                    mappedAuthorities.addAll(groupList.stream()
+                            .filter(String.class::isInstance)
+                            .map(String.class::cast)
                             .map(role -> new SimpleGrantedAuthority("ROLE_" + role))
-                            .collect(Collectors.toSet());
+                            .collect(Collectors.toSet()));
                 }
-            } catch (Exception exception) {
-                System.out.println("Role mapping error: " + exception.getMessage());
             }
             return mappedAuthorities;
         };

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Message } from '../types';
 
 interface Props {
@@ -8,6 +8,17 @@ interface Props {
 
 export function MessageList({ messages, isLoading }: Props) {
     const bottomRef = useRef<HTMLDivElement>(null);
+    const [expandedResults, setExpandedResults] = useState<Set<string>>(() => new Set());
+    const [expandedQueries, setExpandedQueries] = useState<Set<string>>(() => new Set());
+
+    const toggle = (setValue: React.Dispatch<React.SetStateAction<Set<string>>>, id: string) => {
+        setValue(previous => {
+            const next = new Set(previous);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
+    };
 
     useEffect(() => {
         bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -40,6 +51,24 @@ export function MessageList({ messages, isLoading }: Props) {
                     <div style={S.content}>
                         {msg.content || <span style={{ color: '#7d8590', fontStyle: 'italic' }}>Generating response...</span>}
                     </div>
+                    {msg.sqlResult && <section style={S.result}>
+                        <button type="button" style={S.disclosure} aria-expanded={expandedResults.has(msg.id)}
+                            onClick={() => toggle(setExpandedResults, msg.id)}>
+                            <span style={S.chevron}>{expandedResults.has(msg.id) ? '▾' : '▸'}</span>
+                            Results ({msg.sqlResult.count} rows)
+                        </button>
+                        {expandedResults.has(msg.id) && <div style={{ overflowX: 'auto', marginTop: 8 }}>
+                            {msg.sqlResult.columns.length === 0 ? <div>No results found.</div> : <table style={S.table}>
+                                <thead><tr>{msg.sqlResult.columns.map(c => <th key={c}>{c}</th>)}</tr></thead>
+                                <tbody>{msg.sqlResult.rows.map((row, i) => <tr key={i}>{msg.sqlResult!.columns.map(c => <td key={c}>{row[c] == null ? 'NULL' : String(row[c])}</td>)}</tr>)}</tbody>
+                            </table>}
+                            <button type="button" style={S.queryDisclosure} aria-expanded={expandedQueries.has(msg.id)}
+                                onClick={() => toggle(setExpandedQueries, msg.id)}>
+                                <span style={S.chevron}>{expandedQueries.has(msg.id) ? '▾' : '▸'}</span>Executed query
+                            </button>
+                            {expandedQueries.has(msg.id) && <pre style={S.query}>{msg.sqlResult.query}</pre>}
+                        </div>}
+                    </section>}
                 </div>
             ))}
 
@@ -84,5 +113,11 @@ const S: Record<string, React.CSSProperties> = {
         opacity: 0.6, marginBottom: 4,
     },
     content: { whiteSpace: 'pre-wrap' },
+    result: { marginTop: 12, borderTop: '1px solid #30363d', paddingTop: 8 },
+    disclosure: { border: 0, background: 'transparent', color: 'inherit', cursor: 'pointer', font: 'inherit', fontWeight: 600, padding: 0, display: 'flex', alignItems: 'center', gap: 6 },
+    queryDisclosure: { border: 0, background: 'transparent', color: 'inherit', cursor: 'pointer', font: 'inherit', padding: '10px 0 0', display: 'flex', alignItems: 'center', gap: 6 },
+    chevron: { width: 12, color: '#8b949e' },
+    query: { whiteSpace: 'pre-wrap', background: '#0d1117', padding: 8, borderRadius: 4, fontSize: 12 },
+    table: { borderCollapse: 'collapse', fontSize: 12, width: '100%' },
 };
 export default MessageList;
