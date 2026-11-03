@@ -1,33 +1,55 @@
-// FILE: main/java/com/synapse/backend/services/ChatProcessingService.java
 package com.synapse.backend.services;
 
 import com.synapse.backend.models.*;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Service
+@org.springframework.context.annotation.Profile({"ai", "legacy"})
 public class ChatProcessingService {
 
-    private final CsvStorageService csvStorageService;
-    private final SqlAgentService sqlAgentService;
-    private final DatasetMetadataService metadataService;
-    private final JdbcTemplate jdbcTemplate;
+    private static final Duration CHAT_RESULT_CACHE_TTL = Duration.ofMinutes(30);
 
-    public ChatProcessingService(CsvStorageService csvStorageService,
-                                 DatasetMetadataService metadataService, JdbcTemplate jdbcTemplate,
-                                 Optional<SqlAgentService> sqlAgentService) {
-        this.csvStorageService = csvStorageService;
-        this.metadataService = metadataService;
-        this.jdbcTemplate = jdbcTemplate;
+    private final DatasetClient datasetClient;
+    private final SqlAgentService sqlAgentService;
+    private final RedisCacheSupport cache;
+
+    public ChatProcessingService(DatasetClient datasetClient,
+                                 Optional<SqlAgentService> sqlAgentService,
+                                 RedisCacheSupport cache) {
+        this.datasetClient = datasetClient;
         this.sqlAgentService = sqlAgentService.orElse(null);
+        this.cache = cache;
     }
 
-    public String processQuery(String prompt, String conversationId, String documentId) {
+    private String chatCacheKey(String conversationId, String documentId, String prompt,
+                                RequestIdentity.Identity identity) {
+        String normalized = prompt == null ? "" : prompt.trim().toLowerCase(Locale.ROOT);
+        return "chat:" + identity.userId() + ":" + conversationId + ":" + documentId + ":" + sha256Hex(normalized);
+    }
+
+    private String sha256Hex(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                hex.append(String.format("%02x", b));
+            }
+            return hex.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 not available", e);
+        }
+    }
+
+    public String processQuery(String prompt, String conversationId, String documentId, RequestIdentity.Identity identity) {
         if (prompt == null || prompt.isBlank()) {
             return "Please provide a question or instruction.";
         }
@@ -42,29 +64,19 @@ public class ChatProcessingService {
         }
 
         // Try to get document from database
-        Optional<CsvDocument> docOpt = csvStorageService.getByIdForConversation(documentId, conversationId);
+        Optional<CsvDocument> docOpt = datasetClient.getDocument(documentId, conversationId, identity);
         if (docOpt.isEmpty()) {
             return "Document ID " + documentId + " was not found. Please re-upload the CSV file.";
         }
 
         CsvDocument doc = docOpt.get();
 
-        // 1. ONLY intercept dedicated, explicit file health inspection queries
+        // Only intercept dedicated, explicit file health inspection queries
         if (isExplicitHealthCheckQuery(lower)) {
             return generateHealthResponse(doc);
         }
 
-        // 2. ROUTE ALL ANALYTICAL INQUIRIES (e.g. "top 3", filters, stats, schema) TO SQL AGENT
-        if (sqlAgentService != null) {
-            try {
-                String datasetContext = loadDatasetContext(conversationId, documentId);
-                return sqlAgentService.processQuery(prompt, conversationId, documentId, datasetContext);
-            } catch (Exception e) {
-                return formatAiError(e);
-            }
-        }
-
-        // 3. OFFLINE FALLBACK ONLY (when no LLM / SQL Agent is active)
+        // Answer common dataset inspection requests from uploaded metadata without an LLM call.
         if (lower.contains("schema") || lower.contains("columns") || lower.contains("data type") || lower.contains("structure")) {
             return generateSchemaResponse(doc);
         }
@@ -79,20 +91,44 @@ public class ChatProcessingService {
             return generateStatsResponse(doc);
         }
 
+        // Route other analytical inquiries (filters, aggregates, freeform questions) through the SQL agent.
+        if (sqlAgentService != null) {
+            try {
+                String datasetContext = loadDatasetContext(conversationId, documentId, identity);
+                return sqlAgentService.processQuery(prompt, conversationId, documentId, datasetContext, identity);
+            } catch (Exception e) {
+                return formatAiError(e);
+            }
+        }
+
         return "I can help with health checks, schema analysis, null values, and previews. For advanced SQL queries, enable LLM integration.";
     }
 
-    public ChatResponse processStructuredQuery(String prompt, String conversationId, String documentId) {
+    public ChatResponse processStructuredQuery(String prompt, String conversationId, String documentId,
+                                               RequestIdentity.Identity identity) {
+        String cacheKey = chatCacheKey(conversationId, documentId, prompt, identity);
+        Optional<ChatResponse> cached = cache.get(cacheKey, ChatResponse.class);
+        if (cached.isPresent()) {
+            return cached.get();
+        }
+
+        ChatResponse response = computeStructuredQuery(prompt, conversationId, documentId, identity);
+        cache.put(cacheKey, response, CHAT_RESULT_CACHE_TTL);
+        return response;
+    }
+
+    private ChatResponse computeStructuredQuery(String prompt, String conversationId, String documentId,
+                                                 RequestIdentity.Identity identity) {
         if (prompt != null && documentId != null && !documentId.isBlank() && sqlAgentService != null) {
-            Optional<CsvDocument> doc = csvStorageService.getByIdForConversation(documentId, conversationId);
+            Optional<CsvDocument> doc = datasetClient.getDocument(documentId, conversationId, identity);
             if (doc.isPresent() && !isExplicitHealthCheckQuery(prompt.toLowerCase().trim())) {
                 try {
                     return sqlAgentService.processStructuredQuery(prompt, conversationId, documentId,
-                            loadDatasetContext(conversationId, documentId));
+                            loadDatasetContext(conversationId, documentId, identity), identity);
                 } catch (Exception ignored) { }
             }
         }
-        return new ChatResponse(processQuery(prompt, conversationId, documentId), null);
+        return new ChatResponse(processQuery(prompt, conversationId, documentId, identity), null);
     }
 
     private boolean isExplicitHealthCheckQuery(String lower) {
@@ -123,28 +159,11 @@ public class ChatProcessingService {
         return "Error executing query: " + errorType + " - " + message;
     }
 
-    private String loadDatasetContext(String conversationId, String documentId) {
-        try {
-            String metadataJson = jdbcTemplate.queryForObject(
-                    "SELECT metadata FROM csv_documents WHERE id = ? AND conversation_id = ?",
-                    String.class,
-                    UUID.fromString(documentId), UUID.fromString(conversationId)
-            );
-
-            if (metadataJson != null && !metadataJson.isBlank()) {
-                var metadata = metadataService.metadataFromJson(metadataJson);
-                return metadataService.formatMetadataForSystemPrompt(metadata);
-            }
-        } catch (Exception e) {
-            // Metadata might not exist yet, fall back to in-memory data
-        }
-
-        CsvDocument doc = csvStorageService.getByIdForConversation(documentId, conversationId).orElse(null);
-        if (doc != null) {
-            return buildSimpleContext(doc);
-        }
-
-        return "";
+    private String loadDatasetContext(String conversationId, String documentId, RequestIdentity.Identity identity) {
+        String context = datasetClient.getDatasetContext(documentId, conversationId, identity);
+        if (context != null && !context.isBlank()) return context;
+        return datasetClient.getDocument(documentId, conversationId, identity)
+                .map(this::buildSimpleContext).orElse("");
     }
 
     private String buildSimpleContext(CsvDocument doc) {

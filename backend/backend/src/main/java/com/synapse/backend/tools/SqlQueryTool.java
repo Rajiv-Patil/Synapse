@@ -11,6 +11,7 @@ import java.util.regex.Pattern;
 import com.synapse.backend.models.SqlResult;
 
 @Component
+@org.springframework.context.annotation.Profile({"dataset", "legacy"})
 public class SqlQueryTool {
 
     private final JdbcTemplate jdbcTemplate;
@@ -59,7 +60,7 @@ public class SqlQueryTool {
     private TableTarget resolveTableTarget(String conversationId, String documentId) {
         String tableName = "dataset_" + (documentId != null ? documentId.replace("-", "_") : "default");
 
-        // 1. Locate the table only inside the active conversation's schema.
+        // Locate the table only inside the active conversation's schema.
         try {
             if (conversationId == null || conversationId.isBlank()) {
                 throw new IllegalArgumentException("Conversation ID is required");
@@ -78,7 +79,7 @@ public class SqlQueryTool {
         } catch (Exception ignored) {
         }
 
-        // 2. Auto-restore if table was dropped
+        // Auto-restore if table was dropped
         if (documentId != null && !documentId.isBlank() && conversationId != null && !conversationId.isBlank()) {
             try {
                 csvStorageService.restoreDatasetTableIfMissing(conversationId, documentId, tableName);
@@ -89,7 +90,7 @@ public class SqlQueryTool {
             }
         }
 
-        // 3. Fallback
+        // Fallback
         String schemaName = "conv_" + (conversationId != null ? conversationId.replace("-", "_") : "default");
         String fullTableName = "\"" + schemaName + "\".\"" + tableName + "\"";
         return new TableTarget(schemaName, tableName, fullTableName);
@@ -107,18 +108,18 @@ public class SqlQueryTool {
                 return null;
             }
 
-            // 1. Strip trailing semicolons, whitespace, and dangling UNION clauses
+            // Strip trailing semicolons, whitespace, and dangling UNION clauses
             String cleanedQuery = query.trim();
             while (cleanedQuery.endsWith(";")) {
                 cleanedQuery = cleanedQuery.substring(0, cleanedQuery.length() - 1).trim();
             }
             cleanedQuery = cleanedQuery.replaceAll("(?i)\\s+UNION(\\s+ALL)?\\s*$", "").trim();
 
-            // 2. Single-pass table replacement to prevent double-quote corruption ("" identifiers)
+            // Single-pass table replacement to prevent double-quote corruption ("" identifiers)
             String sanitizedQuery = TABLE_REFERENCE_PATTERN.matcher(cleanedQuery)
                     .replaceAll(Matcher.quoteReplacement(target.fullTableName));
 
-            // 3. Resolve columns that need quoting without breaking string literals ('...')
+            // Resolve columns that need quoting without breaking string literals ('...')
             sanitizedQuery = resolveColumnNames(target.schemaName, target.tableName, sanitizedQuery);
 
             String limitedQuery = "SELECT * FROM (" + sanitizedQuery + ") AS limited_query LIMIT 1000";

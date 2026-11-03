@@ -1,4 +1,3 @@
-// FILE: main/java/com/synapse/backend/config/LangChain4jConfig.java
 package com.synapse.backend.config;
 
 import dev.langchain4j.model.chat.ChatLanguageModel;
@@ -10,6 +9,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 @Configuration
+@org.springframework.context.annotation.Profile({"ai", "legacy"})
 @ConditionalOnProperty(name = "langchain4j.enabled", havingValue = "true")
 public class LangChain4jConfig {
 

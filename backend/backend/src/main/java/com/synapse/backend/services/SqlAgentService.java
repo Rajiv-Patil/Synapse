@@ -1,7 +1,5 @@
-// FILE: main/java/com/synapse/backend/services/SqlAgentService.java
 package com.synapse.backend.services;
 
-import com.synapse.backend.tools.SqlQueryTool;
 import com.synapse.backend.models.ChatResponse;
 import com.synapse.backend.models.SqlResult;
 import dev.langchain4j.model.chat.ChatLanguageModel;
@@ -12,55 +10,55 @@ import java.util.Map;
 import java.util.LinkedHashMap;
 
 @Service
+@org.springframework.context.annotation.Profile({"ai", "legacy"})
 @ConditionalOnBean(ChatLanguageModel.class)
 public class SqlAgentService {
 
     private final ChatLanguageModel chatLanguageModel;
-    private final SqlQueryTool sqlQueryTool;
-    private final DatasetMetadataService metadataService;
+    private final DatasetClient datasetClient;
 
-    public SqlAgentService(ChatLanguageModel chatLanguageModel, SqlQueryTool sqlQueryTool,
-                           DatasetMetadataService metadataService) {
+    public SqlAgentService(ChatLanguageModel chatLanguageModel, DatasetClient datasetClient) {
         this.chatLanguageModel = chatLanguageModel;
-        this.sqlQueryTool = sqlQueryTool;
-        this.metadataService = metadataService;
+        this.datasetClient = datasetClient;
     }
 
-    public String processQuery(String userQuery, String conversationId, String documentId, String datasetContext) {
-        return processStructuredQuery(userQuery, conversationId, documentId, datasetContext).getContent();
+    public String processQuery(String userQuery, String conversationId, String documentId, String datasetContext,
+                               RequestIdentity.Identity identity) {
+        return processStructuredQuery(userQuery, conversationId, documentId, datasetContext, identity).getContent();
     }
 
-    public ChatResponse processStructuredQuery(String userQuery, String conversationId, String documentId, String datasetContext) {
+    public ChatResponse processStructuredQuery(String userQuery, String conversationId, String documentId,
+                                                String datasetContext, RequestIdentity.Identity identity) {
         String lowerQuery = userQuery.toLowerCase().trim();
 
-        // 1. Direct Schema metadata queries
+        // Direct schema metadata queries
         if (lowerQuery.equals("schema") || lowerQuery.equals("show schema") || lowerQuery.equals("describe schema")) {
-            return new ChatResponse(sqlQueryTool.getDatasetSchema(conversationId, documentId), null);
+            return new ChatResponse(datasetClient.getDatasetSchema(conversationId, documentId, identity), null);
         }
 
-        // 2. Direct Row count queries
+        // Direct row count queries
         if (lowerQuery.equals("count") || lowerQuery.equals("row count") || lowerQuery.equals("how many rows")) {
-            return new ChatResponse(sqlQueryTool.getRowCount(conversationId, documentId), null);
+            return new ChatResponse(datasetClient.getRowCount(conversationId, documentId, identity), null);
         }
 
-        // 3. Generate SQL query for all NLP inquiries
+        // Generate SQL query for all NLP inquiries
         String generatedSql = generateSqlQuery(userQuery, datasetContext, null, null);
 
         if (generatedSql != null && !generatedSql.isBlank()) {
-            SqlResult result = sqlQueryTool.queryDataset(conversationId, documentId, generatedSql);
+            SqlResult result = datasetClient.queryDataset(conversationId, documentId, generatedSql, identity);
 
             // Self-healing reflection loop if PostgreSQL throws an error
             if (result == null) {
                 String correctedSql = generateSqlQuery(userQuery, datasetContext, generatedSql, "Query execution failed");
                 if (correctedSql != null && !correctedSql.isBlank()) {
-                    result = sqlQueryTool.queryDataset(conversationId, documentId, correctedSql);
+                    result = datasetClient.queryDataset(conversationId, documentId, correctedSql, identity);
                 }
             }
             if (result == null) return new ChatResponse("I couldn't execute that query. Please try rephrasing it.", null);
             return new ChatResponse(interpret(userQuery, result), result);
         }
 
-        // 4. Fallback to general conversational response
+        // Fallback to general conversational response
         String fallbackPrompt = "You are a helpful data analysis assistant.\n\n"
                 + (datasetContext != null && !datasetContext.isBlank() ? datasetContext + "\n\n" : "")
                 + "Answer the following question clearly in plain natural language.\n"
