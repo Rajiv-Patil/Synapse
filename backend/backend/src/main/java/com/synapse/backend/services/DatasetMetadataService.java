@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import java.util.*;
 
 @Service
+@org.springframework.context.annotation.Profile({"dataset", "legacy"})
 public class DatasetMetadataService {
 
     private final JdbcTemplate jdbcTemplate;

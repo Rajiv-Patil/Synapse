@@ -12,32 +12,35 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.synapse.backend.models.SqlResult;
 
 @Service
+@org.springframework.context.annotation.Profile({"conversation", "legacy"})
 public class ConversationService {
 
     private static final Logger log = LoggerFactory.getLogger(ConversationService.class);
+    private static final Duration CONVERSATION_CACHE_TTL = Duration.ofMinutes(5);
 
     private final JdbcTemplate jdbcTemplate;
-    private final UserService userService;
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final RedisCacheSupport cache;
 
-    public ConversationService(JdbcTemplate jdbcTemplate, UserService userService) {
+    public ConversationService(JdbcTemplate jdbcTemplate, RedisCacheSupport cache) {
         this.jdbcTemplate = jdbcTemplate;
-        this.userService = userService;
+        this.cache = cache;
+    }
+
+    private String conversationCacheKey(UUID userId, UUID conversationId) {
+        return "conv:" + userId + ":" + conversationId;
     }
 
     @Transactional
-    public Conversation createConversation(String title, String userSub, String userEmail, String userName,
+    public Conversation createConversation(String title, UUID userId, String userSub, String userEmail, String userName,
                                            String documentId, String documentName) {
-
-        var user = userService.getOrCreateUser(userSub, userEmail, userName);
-        UUID userId = user.getId();
-
         // Satisfy the PostgreSQL RLS Policy natively before attempting the INSERT
         setUserContext(userId);
 
@@ -68,24 +71,17 @@ public class ConversationService {
     }
 
     @Transactional(readOnly = true)
-    public List<Conversation> getConversationsByUser(String userSub) {
-        if (userSub == null || userSub.isBlank() || userSub.equals("guest") || userSub.equals("anonymousUser")) {
+    public List<Conversation> getConversationsByUser(UUID userId) {
+        if (userId == null) {
             log.warn("Refusing conversation lookup without an authenticated user subject");
             return new ArrayList<>();
         }
-
-        var userOpt = userService.findBySub(userSub);
-
-        if (userOpt.isEmpty()) {
-            return new ArrayList<>();
-        }
-
-        setUserContext(userOpt.get().getId());
+        setUserContext(userId);
 
         return jdbcTemplate.query(
                 "SELECT * FROM conversations WHERE user_id = ? ORDER BY updated_at DESC",
                 new ConversationRowMapper(),
-                userOpt.get().getId()
+                userId
         );
     }
 
@@ -97,6 +93,13 @@ public class ConversationService {
         } catch (IllegalArgumentException e) {
             return Optional.empty();
         }
+
+        String cacheKey = conversationCacheKey(userId, conversationId);
+        Optional<Conversation> cached = cache.get(cacheKey, Conversation.class);
+        if (cached.isPresent()) {
+            return cached;
+        }
+
         setUserContext(userId);
         try {
             Conversation conv = jdbcTemplate.queryForObject(
@@ -108,6 +111,7 @@ public class ConversationService {
             if (conv != null) {
                 createConversationSchema(conversationId, userId);
                 conv.setMessages(loadChatMessages(conversationId));
+                cache.put(cacheKey, conv, CONVERSATION_CACHE_TTL);
             }
 
             return Optional.ofNullable(conv);
@@ -150,6 +154,7 @@ public class ConversationService {
                     convId, userId);
         }
 
+        cache.evict(conversationCacheKey(userId, convId));
         return getByIdAndUser(conversationId, userId).orElse(null);
     }
 
@@ -166,6 +171,7 @@ public class ConversationService {
                 "WHERE id = ? AND user_id = ?",
                 docId, documentName, documentName, convId, userId
         );
+        cache.evict(conversationCacheKey(userId, convId));
         return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM conversations WHERE id = ? AND user_id = ?",
                 Integer.class, convId, userId) > 0;
     }
@@ -191,6 +197,7 @@ public class ConversationService {
         jdbcTemplate.execute("DROP SCHEMA IF EXISTS \"" + schemaName + "\" CASCADE");
 
         int rows = jdbcTemplate.update("DELETE FROM conversations WHERE id = ? AND user_id = ?", conversationId, userId);
+        cache.evict(conversationCacheKey(userId, conversationId));
         return rows > 0;
     }
 

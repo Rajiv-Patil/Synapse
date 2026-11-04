@@ -1,5 +1,6 @@
 package com.synapse.backend.models;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -12,6 +13,7 @@ import java.util.Map;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class DatasetMetadata {
     private String tableName;
     private String schemaName;
@@ -24,6 +26,7 @@ public class DatasetMetadata {
     @Builder
     @NoArgsConstructor
     @AllArgsConstructor
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public static class ColumnDefinition {
         private String name;
         private String dataType;

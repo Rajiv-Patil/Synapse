@@ -1,54 +1,45 @@
-// FILE: main/java/com/synapse/backend/controllers/ConversationController.java
 package com.synapse.backend.controllers;
 
 import com.synapse.backend.models.ChatMessage;
-import com.synapse.backend.models.ChatResponse;
-import com.synapse.backend.models.ChatRequest;
 import com.synapse.backend.models.Conversation;
-import com.synapse.backend.services.ChatProcessingService;
 import com.synapse.backend.services.ConversationService;
-import com.synapse.backend.services.CsvStorageService;
-import com.synapse.backend.services.UserService;
+import com.synapse.backend.services.RequestIdentity;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
-import org.springframework.security.oauth2.core.oidc.user.DefaultOidcUser;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.context.annotation.Profile;
 
 import java.time.Instant;
 import java.util.*;
 
 @RestController
+@Profile({"conversation", "legacy"})
 @RequestMapping("/api")
 public class ConversationController {
 
     private final ConversationService conversationService;
-    private final ChatProcessingService chatProcessingService;
-    private final UserService userService;
-    private final CsvStorageService csvStorageService;
+    private final RequestIdentity requestIdentity;
 
-    public ConversationController(ConversationService conversationService,
-                                  ChatProcessingService chatProcessingService,
-                                  UserService userService,
-                                  CsvStorageService csvStorageService) {
+    public ConversationController(ConversationService conversationService, RequestIdentity requestIdentity) {
         this.conversationService = conversationService;
-        this.chatProcessingService = chatProcessingService;
-        this.userService = userService;
-        this.csvStorageService = csvStorageService;
+        this.requestIdentity = requestIdentity;
     }
 
     @GetMapping("/conversations")
-    public ResponseEntity<List<Conversation>> getConversations(Authentication authentication) {
-        String userSub = extractUserSub(authentication);
-        List<Conversation> list = conversationService.getConversationsByUser(userSub);
+    public ResponseEntity<List<Conversation>> getConversations(Authentication authentication,
+            @RequestHeader(value = "X-Authenticated-Sub", required = false) String forwardedSub,
+            @RequestHeader(value = "X-Authenticated-User-Id", required = false) String forwardedUserId) {
+        var identity = requestIdentity.resolve(authentication, forwardedSub, forwardedUserId);
+        List<Conversation> list = conversationService.getConversationsByUser(identity.userId());
         return ResponseEntity.ok(list);
     }
 
     @PostMapping("/conversations")
     public ResponseEntity<Conversation> createConversation(@RequestBody(required = false) Map<String, String> body,
-                                                           Authentication authentication) {
-        String userSub = extractUserSub(authentication);
-        String userEmail = extractUserEmail(authentication);
-        String userName = extractUserName(authentication);
+                                                           Authentication authentication,
+                                                           @RequestHeader(value = "X-Authenticated-Sub", required = false) String forwardedSub,
+                                                           @RequestHeader(value = "X-Authenticated-User-Id", required = false) String forwardedUserId) {
+        var identity = requestIdentity.resolve(authentication, forwardedSub, forwardedUserId);
 
         String title = body != null ? body.get("title") : "New Analysis";
         String documentId = body != null ? body.get("documentId") : null;
@@ -59,20 +50,17 @@ public class ConversationController {
             return ResponseEntity.badRequest().build();
         }
 
-        Conversation conv = conversationService.createConversation(title, userSub, userEmail, userName, documentId, documentName);
+        Conversation conv = conversationService.createConversation(title, identity.userId(), identity.subject(),
+                identity.email(), identity.name(), documentId, documentName);
         return ResponseEntity.ok(conv);
     }
 
     @GetMapping("/conversations/{id}")
-    public ResponseEntity<?> getConversation(@PathVariable("id") String id, Authentication authentication) {
-        String userSub = extractUserSub(authentication);
-        var userOpt = userService.findBySub(userSub);
-
-        if (userOpt.isEmpty()) {
-            return ResponseEntity.status(403).body(Map.of("error", "User not found"));
-        }
-
-        Optional<Conversation> opt = conversationService.getByIdAndUser(id, userOpt.get().getId());
+    public ResponseEntity<?> getConversation(@PathVariable("id") String id, Authentication authentication,
+            @RequestHeader(value = "X-Authenticated-Sub", required = false) String forwardedSub,
+            @RequestHeader(value = "X-Authenticated-User-Id", required = false) String forwardedUserId) {
+        var identity = requestIdentity.resolve(authentication, forwardedSub, forwardedUserId);
+        Optional<Conversation> opt = conversationService.getByIdAndUser(id, identity.userId());
         if (opt.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
@@ -80,28 +68,21 @@ public class ConversationController {
     }
 
     @DeleteMapping("/conversations/{id}")
-    public ResponseEntity<?> deleteConversation(@PathVariable("id") String id, Authentication authentication) {
-        String userSub = extractUserSub(authentication);
-        var userOpt = userService.findBySub(userSub);
-
-        if (userOpt.isEmpty()) {
-            return ResponseEntity.status(403).body(Map.of("error", "User not found"));
-        }
-
-        boolean deleted = conversationService.delete(id, userOpt.get().getId());
+    public ResponseEntity<?> deleteConversation(@PathVariable("id") String id, Authentication authentication,
+            @RequestHeader(value = "X-Authenticated-Sub", required = false) String forwardedSub,
+            @RequestHeader(value = "X-Authenticated-User-Id", required = false) String forwardedUserId) {
+        var identity = requestIdentity.resolve(authentication, forwardedSub, forwardedUserId);
+        boolean deleted = conversationService.delete(id, identity.userId());
         return ResponseEntity.ok(Map.of("deleted", deleted));
     }
 
     @PostMapping("/conversations/{id}/messages")
     public ResponseEntity<?> addConversationMessage(@PathVariable("id") String id,
                                                     @RequestBody Map<String, String> body,
-                                                    Authentication authentication) {
-        String userSub = extractUserSub(authentication);
-        var userOpt = userService.findBySub(userSub);
-        if (userOpt.isEmpty()) {
-            return ResponseEntity.status(403).body(Map.of("error", "User not found"));
-        }
-        UUID userId = userOpt.get().getId();
+                                                    Authentication authentication,
+                                                    @RequestHeader(value = "X-Authenticated-Sub", required = false) String forwardedSub,
+                                                    @RequestHeader(value = "X-Authenticated-User-Id", required = false) String forwardedUserId) {
+        UUID userId = requestIdentity.resolve(authentication, forwardedSub, forwardedUserId).userId();
         if (conversationService.getByIdAndUser(id, userId).isEmpty()) {
             return ResponseEntity.notFound().build();
         }
@@ -119,113 +100,48 @@ public class ConversationController {
         return ResponseEntity.ok(Map.of("message", message, "conversation", updated));
     }
 
-    @PostMapping("/chat")
-    public ResponseEntity<?> chat(@RequestBody ChatRequest request, Authentication authentication) {
-        String prompt = request.getPrompt();
-        String convId = request.getConversationId();
-        String docId = request.getDocumentId();
+    @GetMapping("/internal/conversations/{id}")
+    public ResponseEntity<?> getConversationInternal(@PathVariable String id, Authentication authentication,
+            @RequestHeader(value = "X-Authenticated-Sub", required = false) String forwardedSub,
+            @RequestHeader(value = "X-Authenticated-User-Id", required = false) String forwardedUserId) {
+        var identity = requestIdentity.resolve(authentication, forwardedSub, forwardedUserId);
+        return conversationService.getByIdAndUser(id, identity.userId())
+                .<ResponseEntity<?>>map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.notFound().build());
+    }
 
-        String userSub = extractUserSub(authentication);
-        String userEmail = extractUserEmail(authentication);
-        String userName = extractUserName(authentication);
+    @PostMapping("/internal/conversations")
+    public ResponseEntity<Conversation> createConversationInternal(@RequestBody(required = false) Map<String, String> body,
+            Authentication authentication,
+            @RequestHeader(value = "X-Authenticated-Sub", required = false) String forwardedSub,
+            @RequestHeader(value = "X-Authenticated-User-Id", required = false) String forwardedUserId) {
+        var identity = requestIdentity.resolve(authentication, forwardedSub, forwardedUserId);
+        String title = body == null ? "New Analysis" : body.getOrDefault("title", "New Analysis");
+        return ResponseEntity.ok(conversationService.createConversation(title, identity.userId(), identity.subject(),
+                identity.email(), identity.name(), null, null));
+    }
 
-        var userOpt = userService.findBySub(userSub);
-        if (userOpt.isEmpty()) {
-            return ResponseEntity.status(403).body(Map.of("error", "User not found"));
-        }
-        UUID userId = userOpt.get().getId();
-
-        // Auto-provision conversation and schema if it does not exist in DB
-        Optional<Conversation> existingConv = Optional.empty();
-        if (convId != null && !convId.isBlank()) {
-            existingConv = conversationService.getByIdAndUser(convId, userId);
-            if (existingConv.isEmpty()) {
-                return ResponseEntity.notFound().build();
-            }
-        } else {
-            Conversation created = conversationService.createConversation(
-                    "New Analysis", userSub, userEmail, userName, null, null
-            );
-            convId = created.getId();
-        }
-
-        if (docId == null || docId.isBlank()) {
-            docId = existingConv.map(Conversation::getDocumentId).orElse(null);
-        }
-        if (docId != null && !docId.isBlank() && !csvStorageService.belongsToConversation(docId, convId)) {
+    @PostMapping("/internal/conversations/{id}/messages")
+    public ResponseEntity<?> addMessageInternal(@PathVariable String id, @RequestBody ChatMessage message,
+            Authentication authentication,
+            @RequestHeader(value = "X-Authenticated-Sub", required = false) String forwardedSub,
+            @RequestHeader(value = "X-Authenticated-User-Id", required = false) String forwardedUserId) {
+        var identity = requestIdentity.resolve(authentication, forwardedSub, forwardedUserId);
+        try {
+            return ResponseEntity.ok(conversationService.addMessage(id, identity.userId(), message));
+        } catch (IllegalArgumentException exception) {
             return ResponseEntity.notFound().build();
         }
-
-        // Record User Message
-        ChatMessage userMessage = ChatMessage.builder()
-                .id(UUID.randomUUID().toString())
-                .role("user")
-                .content(prompt)
-                .timestamp(Instant.now())
-                .build();
-        conversationService.addMessage(convId, userId, userMessage);
-
-        // Process with ChatProcessingService
-        ChatResponse response = chatProcessingService.processStructuredQuery(prompt, convId, docId);
-
-        // Record Assistant Message
-        ChatMessage assistantMessage = ChatMessage.builder()
-                .id(UUID.randomUUID().toString())
-                .role("assistant")
-                .content(response.getContent())
-                .sqlResult(response.getSqlResult())
-                .timestamp(Instant.now())
-                .build();
-        Conversation updated = conversationService.addMessage(convId, userId, assistantMessage);
-
-        Map<String, Object> resp = new HashMap<>();
-        resp.put("conversationId", convId);
-        resp.put("message", assistantMessage);
-        resp.put("conversation", updated);
-
-        return ResponseEntity.ok(resp);
     }
 
-    @GetMapping("/chat")
-    public ResponseEntity<?> chatGet(@RequestParam(value = "message", defaultValue = "Hello") String message,
-                                     @RequestParam(value = "documentId", required = false) String documentId,
-                                     @RequestParam(value = "conversationId", required = false) String conversationId,
-                                     Authentication authentication) {
-        var userOpt = userService.findBySub(extractUserSub(authentication));
-        if (userOpt.isEmpty() || conversationId == null ||
-                conversationService.getByIdAndUser(conversationId, userOpt.get().getId()).isEmpty() ||
-                (documentId != null && !documentId.isBlank() &&
-                        !csvStorageService.belongsToConversation(documentId, conversationId))) {
-            return ResponseEntity.notFound().build();
-        }
-        String result = chatProcessingService.processQuery(message, conversationId, documentId);
-        return ResponseEntity.ok(Map.of(
-                "reply", result,
-                "message", result
-        ));
-    }
-
-    private String extractUserSub(Authentication authentication) {
-        if (authentication != null && authentication.getPrincipal() instanceof DefaultOidcUser oidcUser) {
-            return oidcUser.getSubject();
-        }
-        return authentication != null ? authentication.getName() : "guest";
-    }
-
-    private String extractUserEmail(Authentication authentication) {
-        if (authentication != null && authentication.getPrincipal() instanceof DefaultOidcUser oidcUser) {
-            return oidcUser.getEmail();
-        }
-        return null;
-    }
-
-    private String extractUserName(Authentication authentication) {
-        if (authentication != null && authentication.getPrincipal() instanceof DefaultOidcUser oidcUser) {
-            Object name = oidcUser.getAttributes().get("name");
-            if (name instanceof String value && !value.isBlank()) return value;
-            String email = oidcUser.getEmail();
-            return email != null && !email.isBlank() ? email : oidcUser.getSubject();
-        }
-        return null;
+    @PostMapping("/internal/conversations/{id}/document")
+    public ResponseEntity<?> attachDocumentInternal(@PathVariable String id, @RequestBody Map<String, String> body,
+            Authentication authentication,
+            @RequestHeader(value = "X-Authenticated-Sub", required = false) String forwardedSub,
+            @RequestHeader(value = "X-Authenticated-User-Id", required = false) String forwardedUserId) {
+        var identity = requestIdentity.resolve(authentication, forwardedSub, forwardedUserId);
+        boolean attached = conversationService.attachDocument(id, identity.userId(),
+                body.get("documentId"), body.get("documentName"));
+        return attached ? ResponseEntity.ok(Map.of("attached", true)) : ResponseEntity.notFound().build();
     }
 }
