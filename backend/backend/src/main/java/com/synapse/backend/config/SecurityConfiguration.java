@@ -3,6 +3,7 @@ package com.synapse.backend.config;
 import com.synapse.backend.handlers.LoginSuccessHandler;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -10,12 +11,15 @@ import org.springframework.security.config.annotation.web.configurers.AbstractHt
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.authority.mapping.GrantedAuthoritiesMapper;
+import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
 import org.springframework.security.oauth2.core.oidc.user.OidcUserAuthority;
 import org.springframework.security.oauth2.core.user.OAuth2UserAuthority;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -24,9 +28,12 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 @Configuration
+@Profile({"identity", "legacy"})
 @EnableWebSecurity
 @EnableMethodSecurity
 public class SecurityConfiguration {
+
+    private static final Logger log = LoggerFactory.getLogger(SecurityConfiguration.class);
 
     private final LoginSuccessHandler loginSuccessHandler;
 
@@ -46,7 +53,9 @@ public class SecurityConfiguration {
                                 "/index.html",
                                 "/static/**",
                                 "/api/public",
-                                "/api/auth/me"
+                                "/api/auth/me",
+                                "/actuator/health",
+                                "/actuator/health/**"
                         ).permitAll()
                         .requestMatchers("/api/csv/**").authenticated()
                         .requestMatchers("/api/conversations/**").authenticated()
@@ -59,6 +68,16 @@ public class SecurityConfiguration {
                 // Attach the success handler to the OAuth2 Login flow
                 .oauth2Login(oauth2 -> oauth2
                         .successHandler(loginSuccessHandler)
+                        .failureHandler((request, response, exception) -> {
+                            if (exception instanceof OAuth2AuthenticationException oauthException) {
+                                log.warn("Cognito sign-in failed ({}): {}",
+                                        oauthException.getError().getErrorCode(),
+                                        oauthException.getError().getDescription());
+                            } else {
+                                log.warn("Cognito sign-in failed ({})", exception.getClass().getSimpleName());
+                            }
+                            response.sendRedirect("/login?error");
+                        })
                 );
 
         return http.build();

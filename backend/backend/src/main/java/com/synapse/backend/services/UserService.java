@@ -14,6 +14,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 @Service
+@org.springframework.context.annotation.Profile({"identity", "legacy"})
 public class UserService {
 
     private final JdbcTemplate jdbcTemplate;
