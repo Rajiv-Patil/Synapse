@@ -1,12 +1,14 @@
-// FILE: main/java/com/synapse/backend/controllers/CsvController.java
 package com.synapse.backend.controllers;
 
 import com.synapse.backend.models.CsvDocument;
-import com.synapse.backend.services.ConversationService;
+import com.synapse.backend.services.ConversationClient;
 import com.synapse.backend.services.CsvHealthAndHealService;
 import com.synapse.backend.services.CsvStorageService;
 import com.synapse.backend.services.DatasetMetadataService;
-import com.synapse.backend.services.UserService;
+import com.synapse.backend.services.RedisCacheSupport;
+import com.synapse.backend.services.RequestIdentity;
+import com.synapse.backend.tools.SqlQueryTool;
+import com.synapse.backend.models.SqlResult;
 import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.CSVParser;
 import org.springframework.core.io.ByteArrayResource;
@@ -14,42 +16,54 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
-import org.springframework.security.oauth2.core.oidc.user.DefaultOidcUser;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.context.annotation.Profile;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.*;
 
 @RestController
+@Profile({"dataset", "legacy"})
 @RequestMapping("/api/csv")
 public class CsvController {
+
+    private static final Duration DATASET_CACHE_TTL = Duration.ofMinutes(60);
 
     private final CsvHealthAndHealService healthAndHealService;
     private final CsvStorageService storageService;
     private final DatasetMetadataService metadataService;
-    private final ConversationService conversationService;
-    private final UserService userService;
+    private final ConversationClient conversationClient;
+    private final RequestIdentity requestIdentity;
+    private final SqlQueryTool sqlQueryTool;
+    private final RedisCacheSupport cache;
 
     public CsvController(CsvHealthAndHealService healthAndHealService,
                          CsvStorageService storageService,
                          DatasetMetadataService metadataService,
-                         ConversationService conversationService,
-                         UserService userService) {
+                         ConversationClient conversationClient,
+                         RequestIdentity requestIdentity,
+                         SqlQueryTool sqlQueryTool,
+                         RedisCacheSupport cache) {
         this.healthAndHealService = healthAndHealService;
         this.storageService = storageService;
         this.metadataService = metadataService;
-        this.conversationService = conversationService;
-        this.userService = userService;
+        this.conversationClient = conversationClient;
+        this.requestIdentity = requestIdentity;
+        this.sqlQueryTool = sqlQueryTool;
+        this.cache = cache;
     }
 
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<?> uploadCsv(@RequestParam("file") MultipartFile file,
                                        @RequestParam(value = "conversationId", required = false) String conversationId,
-                                       Authentication authentication) {
+                                       Authentication authentication,
+                                       @RequestHeader(value = "X-Authenticated-Sub", required = false) String forwardedSub,
+                                       @RequestHeader(value = "X-Authenticated-User-Id", required = false) String forwardedUserId) {
         String originalFilename = file.getOriginalFilename();
         if (originalFilename == null || !originalFilename.toLowerCase().endsWith(".csv")) {
             return ResponseEntity.badRequest().body(Map.of(
@@ -69,8 +83,8 @@ public class CsvController {
             ));
         }
 
-        var userOpt = userService.findBySub(extractUserSub(authentication));
-        if (userOpt.isEmpty() || conversationService.getByIdAndUser(conversationId, userOpt.get().getId()).isEmpty()) {
+        RequestIdentity.Identity identity = requestIdentity.resolve(authentication, forwardedSub, forwardedUserId);
+        if (!conversationClient.existsForUser(conversationId, identity)) {
             return ResponseEntity.notFound().build();
         }
 
@@ -92,10 +106,10 @@ public class CsvController {
             String metadataJson = metadataService.metadataToJson(metadata);
 
             // Save document metadata to database
-            storageService.save(doc, conversationId, metadataJson);
+            storageService.save(doc, conversationId, identity.subject(), metadataJson);
 
             // Automatically link the document to the active conversation
-            if (!conversationService.attachDocument(conversationId, userOpt.get().getId(), doc.getId(), originalFilename)) {
+            if (!conversationClient.attachDocument(conversationId, doc.getId(), originalFilename, identity)) {
                 return ResponseEntity.notFound().build();
             }
 
@@ -120,8 +134,10 @@ public class CsvController {
     }
 
     @GetMapping("/{documentId}")
-    public ResponseEntity<?> getDocument(@PathVariable("documentId") String documentId, Authentication authentication) {
-        Optional<CsvDocument> opt = ownedDocument(documentId, authentication);
+    public ResponseEntity<?> getDocument(@PathVariable("documentId") String documentId, Authentication authentication,
+            @RequestHeader(value = "X-Authenticated-Sub", required = false) String forwardedSub,
+            @RequestHeader(value = "X-Authenticated-User-Id", required = false) String forwardedUserId) {
+        Optional<CsvDocument> opt = ownedDocument(documentId, authentication, forwardedSub, forwardedUserId);
         if (opt.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
@@ -138,8 +154,10 @@ public class CsvController {
     }
 
     @GetMapping("/{documentId}/preview")
-    public ResponseEntity<?> getPreview(@PathVariable("documentId") String documentId, Authentication authentication) {
-        Optional<CsvDocument> opt = ownedDocument(documentId, authentication);
+    public ResponseEntity<?> getPreview(@PathVariable("documentId") String documentId, Authentication authentication,
+            @RequestHeader(value = "X-Authenticated-Sub", required = false) String forwardedSub,
+            @RequestHeader(value = "X-Authenticated-User-Id", required = false) String forwardedUserId) {
+        Optional<CsvDocument> opt = ownedDocument(documentId, authentication, forwardedSub, forwardedUserId);
         if (opt.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
@@ -153,8 +171,10 @@ public class CsvController {
     }
 
     @GetMapping("/{documentId}/download")
-    public ResponseEntity<?> downloadHealedCsv(@PathVariable("documentId") String documentId, Authentication authentication) {
-        Optional<CsvDocument> opt = ownedDocument(documentId, authentication);
+    public ResponseEntity<?> downloadHealedCsv(@PathVariable("documentId") String documentId, Authentication authentication,
+            @RequestHeader(value = "X-Authenticated-Sub", required = false) String forwardedSub,
+            @RequestHeader(value = "X-Authenticated-User-Id", required = false) String forwardedUserId) {
+        Optional<CsvDocument> opt = ownedDocument(documentId, authentication, forwardedSub, forwardedUserId);
         if (opt.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
@@ -169,16 +189,10 @@ public class CsvController {
                 .body(resource);
     }
 
-    private Optional<CsvDocument> ownedDocument(String documentId, Authentication authentication) {
-        return userService.findBySub(extractUserSub(authentication))
-                .flatMap(user -> storageService.getByIdForUser(documentId, user.getId()));
-    }
-
-    private String extractUserSub(Authentication authentication) {
-        if (authentication != null && authentication.getPrincipal() instanceof DefaultOidcUser oidcUser) {
-            return oidcUser.getSubject();
-        }
-        return authentication != null ? authentication.getName() : null;
+    private Optional<CsvDocument> ownedDocument(String documentId, Authentication authentication,
+            String forwardedSub, String forwardedUserId) {
+        RequestIdentity.Identity identity = requestIdentity.resolve(authentication, forwardedSub, forwardedUserId);
+        return storageService.getByIdForUser(documentId, identity.subject());
     }
 
     private List<List<String>> parseCsvData(String csvText) throws IOException {
@@ -194,5 +208,81 @@ public class CsvController {
             });
         }
         return rows.size() > 1 ? rows.subList(1, rows.size()) : new ArrayList<>();
+    }
+
+    @GetMapping("/internal/csv/{documentId}")
+    public ResponseEntity<?> getDocumentInternal(@PathVariable String documentId,
+            @RequestParam String conversationId, Authentication authentication,
+            @RequestHeader(value = "X-Authenticated-Sub", required = false) String forwardedSub,
+            @RequestHeader(value = "X-Authenticated-User-Id", required = false) String forwardedUserId) {
+        var identity = requestIdentity.resolve(authentication, forwardedSub, forwardedUserId);
+        return storageService.getByIdForConversationAndUser(documentId, conversationId, identity.subject())
+                .<ResponseEntity<?>>map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.notFound().build());
+    }
+
+    @GetMapping("/internal/csv/{documentId}/context")
+    public ResponseEntity<?> datasetContextInternal(@PathVariable String documentId,
+            @RequestParam String conversationId, Authentication authentication,
+            @RequestHeader(value = "X-Authenticated-Sub", required = false) String forwardedSub,
+            @RequestHeader(value = "X-Authenticated-User-Id", required = false) String forwardedUserId) {
+        var identity = requestIdentity.resolve(authentication, forwardedSub, forwardedUserId);
+        var metadataJson = storageService.getMetadataJsonForConversationAndUser(
+                documentId, conversationId, identity.subject());
+        if (metadataJson.isEmpty()) return ResponseEntity.notFound().build();
+        var metadata = metadataService.metadataFromJson(metadataJson.get());
+        return ResponseEntity.ok(metadataService.formatMetadataForSystemPrompt(metadata));
+    }
+
+    @PostMapping("/internal/dataset/query")
+    public ResponseEntity<?> queryDatasetInternal(@RequestBody Map<String, String> body, Authentication authentication,
+            @RequestHeader(value = "X-Authenticated-Sub", required = false) String forwardedSub,
+            @RequestHeader(value = "X-Authenticated-User-Id", required = false) String forwardedUserId) {
+        var identity = requestIdentity.resolve(authentication, forwardedSub, forwardedUserId);
+        String conversationId = body.get("conversationId");
+        String documentId = body.get("documentId");
+        if (!storageService.belongsToConversationForUser(documentId, conversationId, identity.subject())) {
+            return ResponseEntity.notFound().build();
+        }
+        SqlResult result = sqlQueryTool.queryDataset(conversationId, documentId, body.get("query"));
+        return result == null ? ResponseEntity.unprocessableEntity().build() : ResponseEntity.ok(result);
+    }
+
+    @GetMapping("/internal/dataset/schema")
+    public ResponseEntity<?> schemaInternal(@RequestParam String conversationId, @RequestParam String documentId,
+            Authentication authentication,
+            @RequestHeader(value = "X-Authenticated-Sub", required = false) String forwardedSub,
+            @RequestHeader(value = "X-Authenticated-User-Id", required = false) String forwardedUserId) {
+        var identity = requestIdentity.resolve(authentication, forwardedSub, forwardedUserId);
+        if (!storageService.belongsToConversationForUser(documentId, conversationId, identity.subject())) {
+            return ResponseEntity.notFound().build();
+        }
+        String cacheKey = "dataset:schema:" + identity.subject() + ":" + documentId;
+        Optional<String> cached = cache.get(cacheKey, String.class);
+        if (cached.isPresent()) {
+            return ResponseEntity.ok(cached.get());
+        }
+        String schema = sqlQueryTool.getDatasetSchema(conversationId, documentId);
+        cache.put(cacheKey, schema, DATASET_CACHE_TTL);
+        return ResponseEntity.ok(schema);
+    }
+
+    @GetMapping("/internal/dataset/row-count")
+    public ResponseEntity<?> rowCountInternal(@RequestParam String conversationId, @RequestParam String documentId,
+            Authentication authentication,
+            @RequestHeader(value = "X-Authenticated-Sub", required = false) String forwardedSub,
+            @RequestHeader(value = "X-Authenticated-User-Id", required = false) String forwardedUserId) {
+        var identity = requestIdentity.resolve(authentication, forwardedSub, forwardedUserId);
+        if (!storageService.belongsToConversationForUser(documentId, conversationId, identity.subject())) {
+            return ResponseEntity.notFound().build();
+        }
+        String cacheKey = "dataset:rowcount:" + identity.subject() + ":" + documentId;
+        Optional<String> cached = cache.get(cacheKey, String.class);
+        if (cached.isPresent()) {
+            return ResponseEntity.ok(cached.get());
+        }
+        String rowCount = sqlQueryTool.getRowCount(conversationId, documentId);
+        cache.put(cacheKey, rowCount, DATASET_CACHE_TTL);
+        return ResponseEntity.ok(rowCount);
     }
 }

@@ -20,21 +20,27 @@ import java.nio.charset.StandardCharsets;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
+import java.time.Duration;
 import java.util.*;
 
 @Service
+@org.springframework.context.annotation.Profile({"dataset", "legacy"})
 public class CsvStorageService {
+
+    private static final Duration DATASET_CACHE_TTL = Duration.ofMinutes(60);
 
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
+    private final RedisCacheSupport cache;
 
-    public CsvStorageService(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper) {
+    public CsvStorageService(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper, RedisCacheSupport cache) {
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
+        this.cache = cache;
     }
 
     @Transactional
-    public CsvDocument save(CsvDocument document, String conversationId, String metadataJson) {
+    public CsvDocument save(CsvDocument document, String conversationId, String ownerSub, String metadataJson) {
         String enrichedMetadata = metadataJson;
         try {
             @SuppressWarnings("unchecked")
@@ -70,11 +76,12 @@ public class CsvStorageService {
         String tableName = "dataset_" + document.getId().replace("-", "_");
 
         jdbcTemplate.update(
-                "INSERT INTO csv_documents (id, filename, conversation_id, table_name, original_size_bytes, " +
-                        "healed_size_bytes, metadata, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) " +
+                "INSERT INTO csv_documents (id, filename, conversation_id, owner_sub, table_name, original_size_bytes, " +
+                        "healed_size_bytes, metadata, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) " +
                         "ON CONFLICT (id) DO UPDATE SET " +
                         "filename = EXCLUDED.filename, " +
                         "conversation_id = EXCLUDED.conversation_id, " +
+                        "owner_sub = EXCLUDED.owner_sub, " +
                         "table_name = EXCLUDED.table_name, " +
                         "original_size_bytes = EXCLUDED.original_size_bytes, " +
                         "healed_size_bytes = EXCLUDED.healed_size_bytes, " +
@@ -82,6 +89,7 @@ public class CsvStorageService {
                 docId,
                 document.getFilename(),
                 convId,
+                ownerSub,
                 tableName,
                 document.getOriginalSizeBytes(),
                 document.getHealedSizeBytes(),
@@ -143,13 +151,12 @@ public class CsvStorageService {
     }
 
     @Transactional(readOnly = true)
-    public Optional<CsvDocument> getByIdForUser(String id, UUID userId) {
+    public Optional<CsvDocument> getByIdForUser(String id, String ownerSub) {
         try {
             UUID documentId = UUID.fromString(id);
             CsvDocument doc = jdbcTemplate.queryForObject(
-                    "SELECT d.* FROM csv_documents d JOIN conversations c ON c.id = d.conversation_id " +
-                            "WHERE d.id = ? AND c.user_id = ?",
-                    new CsvDocumentRowMapper(objectMapper), documentId, userId);
+                    "SELECT * FROM csv_documents WHERE id = ? AND owner_sub = ?",
+                    new CsvDocumentRowMapper(objectMapper), documentId, ownerSub);
             return Optional.ofNullable(doc);
         } catch (Exception e) {
             return Optional.empty();
@@ -169,11 +176,65 @@ public class CsvStorageService {
     }
 
     @Transactional(readOnly = true)
+    public Optional<CsvDocument> getByIdForConversationAndUser(String id, String conversationId, String ownerSub) {
+        String cacheKey = "dataset:doc:" + ownerSub + ":" + id;
+        Optional<CsvDocument> cached = cache.get(cacheKey, CsvDocument.class);
+        if (cached.isPresent()) {
+            return cached;
+        }
+
+        try {
+            CsvDocument doc = jdbcTemplate.queryForObject(
+                    "SELECT * FROM csv_documents WHERE id = ? AND conversation_id = ? AND owner_sub = ?",
+                    new CsvDocumentRowMapper(objectMapper), UUID.fromString(id), UUID.fromString(conversationId), ownerSub);
+            if (doc != null) {
+                cache.put(cacheKey, doc, DATASET_CACHE_TTL);
+            }
+            return Optional.ofNullable(doc);
+        } catch (Exception e) {
+            return Optional.empty();
+        }
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<String> getMetadataJsonForConversationAndUser(String id, String conversationId, String ownerSub) {
+        String cacheKey = "dataset:ctx:" + ownerSub + ":" + id;
+        Optional<String> cached = cache.get(cacheKey, String.class);
+        if (cached.isPresent()) {
+            return cached;
+        }
+
+        try {
+            String metadata = jdbcTemplate.queryForObject(
+                    "SELECT metadata::text FROM csv_documents WHERE id = ? AND conversation_id = ? AND owner_sub = ?",
+                    String.class, UUID.fromString(id), UUID.fromString(conversationId), ownerSub);
+            if (metadata != null) {
+                cache.put(cacheKey, metadata, DATASET_CACHE_TTL);
+            }
+            return Optional.ofNullable(metadata);
+        } catch (Exception e) {
+            return Optional.empty();
+        }
+    }
+
+    @Transactional(readOnly = true)
     public boolean belongsToConversation(String documentId, String conversationId) {
         try {
             Integer count = jdbcTemplate.queryForObject(
                     "SELECT COUNT(*) FROM csv_documents WHERE id = ? AND conversation_id = ?",
                     Integer.class, UUID.fromString(documentId), UUID.fromString(conversationId));
+            return count != null && count > 0;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    @Transactional(readOnly = true)
+    public boolean belongsToConversationForUser(String documentId, String conversationId, String ownerSub) {
+        try {
+            Integer count = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM csv_documents WHERE id = ? AND conversation_id = ? AND owner_sub = ?",
+                    Integer.class, UUID.fromString(documentId), UUID.fromString(conversationId), ownerSub);
             return count != null && count > 0;
         } catch (Exception e) {
             return false;

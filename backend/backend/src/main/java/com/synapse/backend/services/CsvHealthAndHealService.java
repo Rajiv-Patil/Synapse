@@ -19,6 +19,7 @@ import java.util.*;
 import java.util.regex.Pattern;
 
 @Service
+@org.springframework.context.annotation.Profile({"dataset", "legacy"})
 public class CsvHealthAndHealService {
 
     private static final Pattern INT_PATTERN = Pattern.compile("^-?\\d+$");
@@ -30,7 +31,7 @@ public class CsvHealthAndHealService {
         List<CsvIssue> issues = new ArrayList<>();
         boolean autoHealed = false;
 
-        // 1. BOM Check
+        // BOM check
         byte[] cleanedBytes = rawBytes;
         if (rawBytes.length >= 3 &&
                 (rawBytes[0] & 0xFF) == 0xEF &&
@@ -86,7 +87,7 @@ public class CsvHealthAndHealService {
             throw new IllegalArgumentException("The uploaded CSV file is empty.");
         }
 
-        // 4. Header Inspection and Healing
+        // Header inspection and healing
         List<String> rawHeaders = parseRowFlexible(cleanLines.getFirst(), delimiter);
         List<String> healedHeaders = new ArrayList<>();
         Set<String> seenHeaders = new HashSet<>();
@@ -123,7 +124,7 @@ public class CsvHealthAndHealService {
 
         int targetColumnCount = healedHeaders.size();
 
-        // 5. Data Rows Parsing & Ragged Row Healing
+        // Data rows parsing and ragged row healing
         List<List<String>> healedDataRows = new ArrayList<>();
         int raggedUnderflowCount = 0;
         int raggedOverflowCount = 0;
@@ -191,7 +192,7 @@ public class CsvHealthAndHealService {
                     .build());
         }
 
-        // 6. Generate Clean RFC-4180 Healed CSV String
+        // Generate clean RFC-4180 healed CSV string
         StringWriter stringWriter = new StringWriter();
         try (CSVPrinter printer = new CSVPrinter(stringWriter, CSVFormat.DEFAULT.builder().setHeader(healedHeaders.toArray(new String[0])).build())) {
             for (List<String> row : healedDataRows) {
@@ -204,11 +205,11 @@ public class CsvHealthAndHealService {
         String healedCsvText = stringWriter.toString();
         byte[] healedBytes = healedCsvText.getBytes(StandardCharsets.UTF_8);
 
-        // 7. Column Analysis & Preview Generation
+        // Column analysis and preview generation
         List<ColumnMetadata> columnMetadataList = analyzeColumns(healedHeaders, healedDataRows);
         List<Map<String, Object>> previewRows = buildPreviewRows(healedHeaders, healedDataRows, 10);
 
-        // 8. Determine Overall Status
+        // Determine overall status
         String status = "HEALTHY";
         if (autoHealed) {
             status = "CORRUPTED_HEALED";
