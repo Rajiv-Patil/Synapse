@@ -2,6 +2,8 @@ server:
   port: 8080
 
 spring:
+  profiles:
+    default: legacy
   config:
     import:
       - optional:file:.env[.properties]
@@ -15,6 +17,7 @@ spring:
           cognito:
             client-id: "${clientId}"
             client-secret: "${clientSecret}"
+            client-authentication-method: client_secret_post
             redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
             scope:
               - email
@@ -30,9 +33,9 @@ spring:
           issuer-uri: "https://cognito-idp.${region}.amazonaws.com/${userPoolId}"
 
   datasource:
-    url: jdbc:postgresql://localhost:5432/synapse
-    username: synapse_app
-    password: "${DB_PASSWORD:}"
+    url: "${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/synapse}"
+    username: "${SPRING_DATASOURCE_USERNAME:synapse_app}"
+    password: "${SPRING_DATASOURCE_PASSWORD:${DB_PASSWORD:}}"
     driver-class-name: org.postgresql.Driver
     hikari:
       maximum-pool-size: 20
@@ -44,6 +47,16 @@ spring:
     init:
       mode: never
       schema-locations: classpath:schema.sql
+  data:
+    redis:
+      host: "${SPRING_DATA_REDIS_HOST:localhost}"
+      port: "${SPRING_DATA_REDIS_PORT:6379}"
+      timeout: 2000ms
+
+management:
+  health:
+    redis:
+      enabled: false
 
 app:
   cognito:

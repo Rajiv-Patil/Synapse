@@ -23,6 +23,7 @@ dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-validation")
 	implementation("org.springframework.boot:spring-boot-starter-webmvc")
 	implementation("org.springframework.boot:spring-boot-starter-data-jdbc")
+	implementation("org.springframework.boot:spring-boot-starter-data-redis")
 
 	implementation("org.apache.commons:commons-csv:1.12.0")
 
@@ -35,6 +36,7 @@ dependencies {
 
 	// Jackson for JSON processing
 	implementation("com.fasterxml.jackson.core:jackson-databind")
+	implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
 
 	// LangChain4j
 	implementation("dev.langchain4j:langchain4j-spring-boot-starter:0.36.2")
