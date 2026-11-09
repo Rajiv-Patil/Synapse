@@ -1,0 +1,177 @@
+services:
+  identity-service:
+    build: ./backend/backend
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/synapse_identity
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-synapse_app}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      SPRING_PROFILES_ACTIVE: identity
+      clientId: ${COGNITO_CLIENT_ID:-}
+      clientSecret: ${COGNITO_CLIENT_SECRET:-}
+      region: ${AWS_REGION:-}
+      userPoolId: ${COGNITO_USER_POOL_ID:-}
+      cognitoDomain: ${COGNITO_DOMAIN:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      HUGGING_FACE_API_KEY: ${HUGGING_FACE_API_KEY:-}
+      APP_FRONTEND_REDIRECT_URL: ${APP_FRONTEND_REDIRECT_URL:-http://localhost:5174/chat}
+      SERVER_FORWARD_HEADERS_STRATEGY: framework
+    depends_on:
+      database-bootstrap:
+        condition: service_completed_successfully
+    expose:
+      - "8080"
+    restart: unless-stopped
+
+  conversation-service:
+    build: ./backend/backend
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/synapse_conversations
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-synapse_app}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      SPRING_PROFILES_ACTIVE: conversation
+      SPRING_DATA_REDIS_HOST: redis-conversation
+      clientId: ${COGNITO_CLIENT_ID:-}
+      clientSecret: ${COGNITO_CLIENT_SECRET:-}
+      region: ${AWS_REGION:-}
+      userPoolId: ${COGNITO_USER_POOL_ID:-}
+      cognitoDomain: ${COGNITO_DOMAIN:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      HUGGING_FACE_API_KEY: ${HUGGING_FACE_API_KEY:-}
+      APP_FRONTEND_REDIRECT_URL: ${APP_FRONTEND_REDIRECT_URL:-http://localhost:5174/chat}
+      SERVER_FORWARD_HEADERS_STRATEGY: framework
+    depends_on:
+      database-bootstrap:
+        condition: service_completed_successfully
+      redis-conversation:
+        condition: service_started
+    expose:
+      - "8080"
+    restart: unless-stopped
+
+  dataset-service:
+    build: ./backend/backend
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/synapse_datasets
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-synapse_app}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      SPRING_PROFILES_ACTIVE: dataset
+      SERVICES_CONVERSATION_BASE_URL: http://conversation-service:8080
+      SPRING_DATA_REDIS_HOST: redis-dataset
+      clientId: ${COGNITO_CLIENT_ID:-}
+      clientSecret: ${COGNITO_CLIENT_SECRET:-}
+      region: ${AWS_REGION:-}
+      userPoolId: ${COGNITO_USER_POOL_ID:-}
+      cognitoDomain: ${COGNITO_DOMAIN:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      HUGGING_FACE_API_KEY: ${HUGGING_FACE_API_KEY:-}
+      APP_FRONTEND_REDIRECT_URL: ${APP_FRONTEND_REDIRECT_URL:-http://localhost:5174/chat}
+      SERVER_FORWARD_HEADERS_STRATEGY: framework
+    depends_on:
+      database-bootstrap:
+        condition: service_completed_successfully
+      conversation-service:
+        condition: service_started
+      redis-dataset:
+        condition: service_started
+    expose:
+      - "8080"
+    restart: unless-stopped
+
+  ai-chat-service:
+    build: ./backend/backend
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/synapse_ai
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-synapse_app}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      SPRING_PROFILES_ACTIVE: ai
+      SERVICES_CONVERSATION_BASE_URL: http://conversation-service:8080
+      SERVICES_DATASET_BASE_URL: http://dataset-service:8080
+      SPRING_DATA_REDIS_HOST: redis-ai
+      clientId: ${COGNITO_CLIENT_ID:-}
+      clientSecret: ${COGNITO_CLIENT_SECRET:-}
+      region: ${AWS_REGION:-}
+      userPoolId: ${COGNITO_USER_POOL_ID:-}
+      cognitoDomain: ${COGNITO_DOMAIN:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      HUGGING_FACE_API_KEY: ${HUGGING_FACE_API_KEY:-}
+      APP_FRONTEND_REDIRECT_URL: ${APP_FRONTEND_REDIRECT_URL:-http://localhost:5174/chat}
+      SERVER_FORWARD_HEADERS_STRATEGY: framework
+    depends_on:
+      database-bootstrap:
+        condition: service_completed_successfully
+      conversation-service:
+        condition: service_started
+      dataset-service:
+        condition: service_started
+      redis-ai:
+        condition: service_started
+    expose:
+      - "8080"
+    restart: unless-stopped
+
+  redis-conversation:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  redis-dataset:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  redis-ai:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "${FRONTEND_PORT:-5174}:80"
+    depends_on:
+      api-gateway:
+        condition: service_started
+    restart: unless-stopped
+
+  api-gateway:
+    build: ./api-gateway
+    depends_on:
+      identity-service:
+        condition: service_started
+      conversation-service:
+        condition: service_started
+      dataset-service:
+        condition: service_started
+      ai-chat-service:
+        condition: service_started
+    expose:
+      - "8080"
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-synapse}
+      POSTGRES_USER: ${POSTGRES_USER:-synapse_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/backend/src/main/resources/schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+      - ./backend/backend/src/main/resources/service-databases.sql:/docker-entrypoint-initdb.d/20-service-databases.sql:ro
+    restart: unless-stopped
+
+  database-bootstrap:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-synapse}
+      POSTGRES_USER: ${POSTGRES_USER:-synapse_app}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    depends_on:
+      postgres:
+        condition: service_started
+    volumes:
+      - ./backend/backend/src/main/resources/service-databases.sql:/bootstrap/service-databases.sql:ro
+      - ./backend/backend/src/main/resources/database-bootstrap.sh:/bootstrap/database-bootstrap.sh:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["sh /bootstrap/database-bootstrap.sh"]
+    restart: "no"
+
+volumes:
+  postgres_data:
