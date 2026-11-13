@@ -14,6 +14,7 @@ services:
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       HUGGING_FACE_API_KEY: ${HUGGING_FACE_API_KEY:-}
       APP_FRONTEND_REDIRECT_URL: ${APP_FRONTEND_REDIRECT_URL:-http://localhost:5174/chat}
+      APP_CORS_ALLOWED_ORIGINS: ${APP_CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174}
       SERVER_FORWARD_HEADERS_STRATEGY: framework
     depends_on:
       database-bootstrap:
