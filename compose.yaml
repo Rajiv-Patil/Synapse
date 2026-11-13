@@ -11,6 +11,7 @@ services:
       region: ${AWS_REGION:-}
       userPoolId: ${COGNITO_USER_POOL_ID:-}
       cognitoDomain: ${COGNITO_DOMAIN:-}
+      SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_COGNITO_REDIRECT_URI: ${COGNITO_REDIRECT_URI:-{baseUrl}/login/oauth2/code/cognito}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       HUGGING_FACE_API_KEY: ${HUGGING_FACE_API_KEY:-}
       APP_FRONTEND_REDIRECT_URL: ${APP_FRONTEND_REDIRECT_URL:-http://localhost:5174/chat}
